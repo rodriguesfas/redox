@@ -50,6 +50,30 @@ impl Default for BtShared {
             acl_in: Vec::new(),
             acl_out: Vec::new(),
             pairing_handle: None,
+            sdp: {
+                let mut srv = crate::sdp_server::SdpServer::new();
+                srv.registry.register(crate::sdp::ServiceRecord {
+                    handle: 0x10000,
+                    attrs: vec![
+                        (
+                            crate::sdp::ATTR_SERVICE_CLASS_ID_LIST,
+                            crate::sdp::DataElement::Seq(alloc::vec![crate::sdp::DataElement::Uuid16(0x1101)]),
+                        ),
+                        (
+                            crate::sdp::ATTR_PROTOCOL_DESCRIPTOR_LIST,
+                            crate::sdp::DataElement::Seq(alloc::vec![
+                                crate::sdp::DataElement::Seq(alloc::vec![crate::sdp::DataElement::Uuid16(0x0100)]), // L2CAP
+                                crate::sdp::DataElement::Seq(alloc::vec![crate::sdp::DataElement::U16(0x0001)]),  // PSM SDP
+                            ]),
+                        ),
+                        (
+                            crate::sdp::ATTR_SERVICE_NAME,
+                            crate::sdp::DataElement::Text("AIOS Serial".into()),
+                        ),
+                    ],
+                });
+                srv
+            },
         }
     }
 }
@@ -71,10 +95,12 @@ pub struct BtShared {
     pub l2cap: crate::l2cap::ChannelTable,
     /// fila de pacotes ACL recebidos p/ userspace ([dcid u16 LE][payload])
     pub acl_in: Vec<Vec<u8>>,
-    /// fila de pacotes ACL p/ envio (daemon drena)
+    /// fila de pacotes ACL p/ envio (daemon drena) — (remote_cid, payload)
     pub acl_out: Vec<(u16, Vec<u8>)>, // (dcid/sig-cid, payload)
     /// connection handle do link pareado (necessario p/ abrir canais)
     pub pairing_handle: Option<u16>,
+    /// servidor SDP (registry local)
+    pub sdp: crate::sdp_server::SdpServer,
 }
 
 impl BtShared {
@@ -190,9 +216,17 @@ impl BtShared {
             self.handle_sig(&acl);
             return;
         }
-        // canal aberto? valida e enfileira cru p/ userspace
-        if self.l2cap.route(&acl).is_ok() {
-            self.acl_in.push(pkt.to_vec());
+        // canal aberto? valida. SDP (psm=1) responde via nosso servidor local;
+        // resto vai para userspace como frame cru.
+        let dcid = u16::from_le_bytes([acl.payload[2], acl.payload[3]]);
+        if let Some(ch) = self.l2cap.channel_by_local_cid(dcid) {
+            if ch.psm == crate::l2cap::PSM_SDP && ch.inbound {
+                if let Some(rsp) = self.sdp.handle(&acl.payload[4..]) {
+                    self.acl_out.push((ch.remote_cid(), rsp));
+                }
+            } else {
+                self.acl_in.push(pkt.to_vec());
+            }
         }
     }
 
@@ -202,6 +236,22 @@ impl BtShared {
             return;
         };
         match sig.code {
+            crate::l2cap::SIG_CONN_REQ => {
+                // remoto abre canal conosco: aceitamos PSM_SDP; o resto rejeita.
+                if sig.data.len() < 4 { return; }
+                let psm = u16::from_le_bytes([sig.data[0], sig.data[1]]);
+                let scid_remote = u16::from_le_bytes([sig.data[2], sig.data[3]]);
+                let Some(handle) = self.pairing_handle else { return; };
+                let (_accepted, rsp) = self.l2cap.on_conn_req(handle, scid_remote, psm, sig.ident);
+                self.acl_out.push((crate::l2cap::CID_SIGNALING, rsp.encode()));
+            }
+            crate::l2cap::SIG_CONFIG_REQ => {
+                if sig.data.len() < 4 { return; }
+                let dcid = u16::from_le_bytes([sig.data[0], sig.data[1]]);
+                if let Some(rsp) = self.l2cap.on_config_req(sig.ident, dcid) {
+                    self.acl_out.push((crate::l2cap::CID_SIGNALING, rsp.encode()));
+                }
+            }
             crate::l2cap::SIG_CONN_RSP => {
                 if sig.data.len() < 8 { return; }
                 let dcid = u16::from_le_bytes([sig.data[0], sig.data[1]]);
@@ -243,12 +293,13 @@ impl BtShared {
         });
         let _ = write!(
             s,
-            "state={} hci={} bd={} inquiring={} devices={} pair={:?}\n",
+            "state={} hci={} bd={} inquiring={} devices={} sdp={} pair={:?}\n",
             if self.ready { "ready" } else { "probe" },
             self.hci_version,
             bd.as_deref().unwrap_or("--"),
             self.inquiring as u8,
             self.devices.len(),
+            self.sdp.registry.count(),
             self.pairing.phase(),
         );
         s
@@ -405,13 +456,33 @@ mod tests {
     use alloc::vec::Vec;
 
     fn ready_shared() -> BtShared {
-        BtShared {
+        let mut s = BtShared {
             ready: true,
             bd_addr: Some([0x04, 0xCA, 0x38, 0x02, 0xAA, 0xBB]),
             hci_version: "5.3",
             manufacturer: 0x0884,
             ..Default::default()
-        }
+        };
+        s.sdp.registry.register(crate::sdp::ServiceRecord {
+            handle: 0x10000,
+            attrs: alloc::vec![
+                (
+                    crate::sdp::ATTR_SERVICE_RECORD_HANDLE,
+                    crate::sdp::DataElement::U32(0x10000)
+                ),
+                (
+                    crate::sdp::ATTR_SERVICE_CLASS_ID_LIST,
+                    crate::sdp::DataElement::Seq(alloc::vec![crate::sdp::DataElement::Uuid16(
+                        0x1101
+                    )]),
+                ),
+                (
+                    crate::sdp::ATTR_SERVICE_NAME,
+                    crate::sdp::DataElement::Text("AIOS Serial".into()),
+                ),
+            ],
+        });
+        s
     }
 
     #[test]
@@ -610,7 +681,7 @@ mod tests {
         // dados internos do remoto disparam acl_in (userspace le "acl")
         let mut aclp3 = Vec::new();
         aclp3.extend_from_slice(&5u16.to_le_bytes());
-        aclp3.extend_from_slice(&0x0050u16.to_le_bytes());
+        aclp3.extend_from_slice(&0x0040u16.to_le_bytes());
         aclp3.extend_from_slice(b"WORLD");
         let pkt3 = crate::l2cap::AclPacket::new(0x20, 2, 0, aclp3).encode();
         s.handle_acl(&pkt3);
@@ -625,6 +696,83 @@ mod tests {
         let pkt4 = crate::l2cap::AclPacket::new(0x20, 2, 0, bad).encode();
         s.handle_acl(&pkt4);
         assert_eq!(s.acl_in.len(), 1);
+    }
+
+    /// Monta um pacote ACL (canal sinalizacao CID 1) com um SigPacket dentro.
+    fn acl_sig_pkt(handle: u16, sig: &crate::l2cap::SigPacket) -> Vec<u8> {
+        let body = sig.encode();
+        let mut aclp = Vec::new();
+        aclp.extend_from_slice(&(body.len() as u16).to_le_bytes());
+        aclp.extend_from_slice(&crate::l2cap::CID_SIGNALING.to_le_bytes());
+        aclp.extend_from_slice(&body);
+        crate::l2cap::AclPacket::new(handle, 2, 0, aclp).encode()
+    }
+
+    /// E2E: remoto abre canal SDP (psm 1) -> aceitamos -> configura -> aberto ->
+    /// ServiceAttributeRequest no canal -> resposta SDP contem 0x1101 e nome.
+    #[test]
+    fn sdp_inbound_channel_server_answer() {
+        let mut s = ready_shared();
+        fed_paired(&mut s);
+
+        // 1) CONN_REQ do remoto: psm=SDP(1), scid deles = 0x0050
+        let mut d = Vec::new();
+        d.extend_from_slice(&1u16.to_le_bytes());
+        d.extend_from_slice(&0x0050u16.to_le_bytes());
+        let req = crate::l2cap::SigPacket { code: crate::l2cap::SIG_CONN_REQ, ident: 7, data: d };
+        s.handle_acl(&acl_sig_pkt(0x20, &req));
+
+        // resposta ConnRsp emitida (aceito)，dcid nosso = 0x40
+        let (cid, rspb) = s.drain_acl_out().next().unwrap();
+        assert_eq!(cid, crate::l2cap::CID_SIGNALING);
+        let rsp = crate::l2cap::SigPacket::decode(&rspb).unwrap();
+        assert_eq!(rsp.code, crate::l2cap::SIG_CONN_RSP);
+        assert_eq!(rsp.ident, 7);
+        assert_eq!(u16::from_le_bytes([rsp.data[4], rsp.data[5]]), 0); // result ok
+
+        // 2) CONFIG_REQ do remoto (no nosso dcid local 0x40)
+        let mut d2 = Vec::new();
+        d2.extend_from_slice(&0x0040u16.to_le_bytes());
+        d2.extend_from_slice(&0u16.to_le_bytes());
+        let cfg = crate::l2cap::SigPacket { code: crate::l2cap::SIG_CONFIG_REQ, ident: 8, data: d2 };
+        s.handle_acl(&acl_sig_pkt(0x20, &cfg));
+        let (_, cfg_rsp) = s.drain_acl_out().next().unwrap();
+        assert_eq!(crate::l2cap::SigPacket::decode(&cfg_rsp).unwrap().code, crate::l2cap::SIG_CONFIG_RSP);
+
+        // 3) SDP ServiceAttributeRequest no handle 0x10000
+        let mut params = Vec::new();
+        params.extend_from_slice(&0x10000u32.to_be_bytes());
+        params.extend_from_slice(&100u16.to_be_bytes());
+        params.extend_from_slice(&crate::sdp::DataElement::Seq(alloc::vec![
+            crate::sdp::DataElement::U32(0x0000_FFFF),
+        ]).encode());
+        params.push(0x00);
+        let pdu = crate::sdp::Pdu {
+            id: crate::sdp::PDU_SVC_ATTR_REQ,
+            tx_id: 0x7777,
+            params,
+        };
+        let mut aclp = Vec::new();
+        aclp.extend_from_slice(&(pdu.params.len() as u16 + 5).to_le_bytes()); // L2CAP hdr len = 5+pdu
+        // L2CAP B-frame: [len][cid][pdu-with-hdr]
+        let pdu_b = pdu.encode();
+        let mut frame_body = Vec::new();
+        frame_body.extend_from_slice(&(5u16 + pdu_b.len() as u16).to_le_bytes());
+        frame_body.extend_from_slice(&0x0040u16.to_le_bytes());
+        let acl_pkt = crate::l2cap::AclPacket::new(0x20, 2, 0, {
+            frame_body.extend_from_slice(&pdu_b);
+            frame_body
+        }).encode();
+        s.handle_acl(&acl_pkt);
+
+        // daemon despejaria a resposta SDP
+        let (rcid, rsp_payload) = s.drain_acl_out().next().unwrap();
+        assert_eq!(rcid, 0x0050); // DCID = source do remoto
+        let (pdu_rsp, _) = crate::sdp::Pdu::decode(&rsp_payload).unwrap();
+        assert_eq!(pdu_rsp.id, crate::sdp::PDU_SVC_ATTR_RSP);
+        assert_eq!(pdu_rsp.tx_id, 0x7777);
+        let uuid_enc = crate::sdp::DataElement::Uuid16(0x1101).encode();
+        assert!(rsp_payload.windows(uuid_enc.len()).any(|w| w == uuid_enc));
     }
 
     #[test]

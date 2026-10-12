@@ -12,7 +12,9 @@ mod hci;
 mod l2cap;
 mod pairing;
 mod probe;
+mod sdp_server;
 mod scheme;
+mod sdp;
 
 extern crate alloc;
 
@@ -151,6 +153,28 @@ fn run(scheme: &str, port: xhcid_interface::PortId, if_num: u8) -> Result<(), &'
         hci_version: report.version.hci_version_str(),
         manufacturer: report.version.manufacturer,
         bd_addr: Some(report.bd_addr),
+        sdp: {
+            // service SDP padrao: dizemos ao mundo que temos SDP server
+            let mut srv = sdp_server::SdpServer::new();
+            srv.registry.register(sdp::ServiceRecord {
+                handle: 0x10000,
+                attrs: alloc::vec![
+                    (
+                        sdp::ATTR_SERVICE_RECORD_HANDLE,
+                        sdp::DataElement::U32(0x10000)
+                    ),
+                    (
+                        sdp::ATTR_SERVICE_CLASS_ID_LIST,
+                        sdp::DataElement::Seq(alloc::vec![sdp::DataElement::Uuid16(0x1000)]),
+                    ),
+                    (
+                        sdp::ATTR_SERVICE_NAME,
+                        sdp::DataElement::Text("AIOS BT SDP".into()),
+                    ),
+                ],
+            });
+            srv
+        },
         ..Default::default()
     };
 

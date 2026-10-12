@@ -170,6 +170,31 @@ pub struct Channel {
     pub handle: u16, // connection handle do link ACL
     pub psm: u16,
     pub state: ChannelState,
+    /// true = canal aceito por nos (remoto abriu); false = nos abrimos
+    pub inbound: bool,
+}
+
+impl Channel {
+    /// Nosso cid local (o que aparece como destino nos pacotes recebidos).
+    pub fn local_cid(&self) -> u16 {
+        if self.inbound { self.dcid.unwrap_or(0) } else { self.scid }
+    }
+    /// Cid do lado remoto (para quem enviamos).
+    pub fn remote_cid(&self) -> u16 {
+        if self.inbound { self.scid } else { self.dcid.unwrap_or(0) }
+    }
+
+    /// usado interno de encode_for p/ chave de busca.
+    fn local_cid_by_outbound_key(&self, dcid: u16) -> Option<u16> {
+        // compatibilidade com chamadas antigas: encode_for buscava por ch.dcid==Some(dcid)
+        if !self.inbound && self.dcid == Some(dcid) {
+            Some(dcid)
+        } else if self.inbound && self.dcid == Some(dcid) {
+            Some(dcid) // inbound: encode_for by our local dcid manda pro lado remoto (scid)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -199,6 +224,7 @@ impl ChannelTable {
             handle,
             psm,
             state: ChannelState::WaitConnectRsp,
+            inbound: false,
         };
         self.channels.push(ch.clone());
 
@@ -256,22 +282,87 @@ impl ChannelTable {
         Ok(())
     }
 
+    /// Connection Request de ENTRADA (o remoto abre canal conosco).
+    /// Aceita so PSM_SDP (nosso servidor SDP). Retorna a ConnRsp p/ enviar.
+    pub fn on_conn_req(&mut self, handle: u16, scid_remote: u16, psm: u16, _ident: u8) -> (bool, SigPacket) {
+        let (accepted, dcid_local, result) = if psm == PSM_SDP {
+            let dcid = self.next_scid;
+            self.next_scid = self.next_scid.wrapping_add(1);
+            if self.next_scid < CID_FIRST_DYNAMIC {
+                self.next_scid = CID_FIRST_DYNAMIC;
+            }
+            (true, dcid, 0u16)
+        } else {
+            (false, 0, 2u16) // PSM not supported
+        };
+
+        if accepted {
+            self.channels.push(Channel {
+                scid: scid_remote,
+                dcid: Some(dcid_local),
+                handle,
+                psm,
+                state: ChannelState::WaitConfigReq,
+                inbound: true,
+            });
+        }
+
+        let mut data = Vec::with_capacity(8);
+        data.extend_from_slice(&dcid_local.to_le_bytes());
+        data.extend_from_slice(&scid_remote.to_le_bytes());
+        data.extend_from_slice(&result.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes()); // status
+        (accepted, SigPacket {
+            code: SIG_CONN_RSP,
+            ident: _ident,
+            data,
+        })
+    }
+
+    /// Configuration Request de entrada: aceitamos qualquer config minima.
+    /// Retorna (Some ConfigRsp, marca Open) ou (None) se canal desconhecido.
+    pub fn on_config_req(&mut self, _ident: u8, dcid: u16) -> Option<SigPacket> {
+        let ch = self
+            .channels
+            .iter_mut()
+            .find(|c| c.dcid == Some(dcid))?;
+        ch.state = ChannelState::Open;
+        // ConfigRsp: [scid = scid do remoto? na vdd: SCID que pedimos = nosso DCID
+        //   na verdade o payload e [SCID(target=source do pedido) etc]; usamos dcid do remoto.
+        let mut data = Vec::with_capacity(8);
+        data.extend_from_slice(&ch.scid.to_le_bytes()); // Source CID (deles)
+        data.extend_from_slice(&0u16.to_le_bytes()); // flags
+        data.extend_from_slice(&0u16.to_le_bytes()); // result OK
+        Some(SigPacket {
+            code: SIG_CONFIG_RSP,
+            ident: _ident,
+            data,
+        })
+    }
+
+    /// Canal aberto pelo cid local (o nosso, ondem o remoto endereca).
+    pub fn channel_by_local_cid(&self, cid: u16) -> Option<&Channel> {
+        self.channels
+            .iter()
+            .find(|c| c.local_cid() == cid && c.state == ChannelState::Open)
+    }
+
+    fn local_cid_matches(&self, dcid: u16) -> bool {
+        self.channels.iter().any(|c| c.local_cid() == dcid)
+    }
+
     /// Empacota dados de um canal aberto num ACL (PB=2 first non-flushable).
     pub fn encode_for(&self, dcid: u16, payload: &[u8]) -> Result<AclPacket, &'static str> {
         let ch = self
             .channels
             .iter()
-            .find(|c| c.dcid == Some(dcid) && c.state == ChannelState::Open)
+            .find(|c| c.local_cid_by_outbound_key(dcid) == Some(dcid) && c.state == ChannelState::Open)
             .ok_or("l2cap: canal nao esta aberto")?;
-        let mut frame = Vec::with_capacity(4 + payload.len());
-        frame.extend_from_slice(&dcid.to_le_bytes());
-        frame.extend_from_slice(&0u16.to_le_bytes()); // payload len L2CAP header? simplificacao: nada
-        // L2CAP B-frame header: [length u16][dcid u16]
+        let remote = ch.remote_cid();
         let mut acl_payload = Vec::with_capacity(4 + payload.len());
         acl_payload.extend_from_slice(&(payload.len() as u16).to_le_bytes());
-        acl_payload.extend_from_slice(&dcid.to_le_bytes());
+        acl_payload.extend_from_slice(&remote.to_le_bytes()); // DCID do REmoto
         acl_payload.extend_from_slice(payload);
-        let _ = frame;
         Ok(AclPacket::new(ch.handle, 2, 0, acl_payload))
     }
 
@@ -285,7 +376,7 @@ impl ChannelTable {
         let ch = self
             .channels
             .iter()
-            .find(|c| c.dcid == Some(dcid) && c.state == ChannelState::Open)
+            .find(|c| c.local_cid() == dcid && c.state == ChannelState::Open)
             .ok_or("l2cap: acl p/ canal nao aberto")?;
         Ok((ch.scid, pkt.payload[4..].to_vec()))
     }
@@ -340,8 +431,12 @@ mod l2cap_sig_tests {
         assert_eq!(&acl.payload[2..4], &0x0050u16.to_le_bytes());
         assert_eq!(&acl.payload[4..], b"ping");
 
-        // roteamento de volta
-        let (scid2, data) = t.route(&acl).unwrap();
+        // roteamento de dados vindos DO REMOTO: DCID= nosso cid local (0x40)
+        let mut inbound = Vec::new();
+        inbound.extend_from_slice(&4u16.to_le_bytes());
+        inbound.extend_from_slice(&CID_FIRST_DYNAMIC.to_le_bytes());
+        inbound.extend_from_slice(b"ping");
+        let (scid2, data) = t.route(&AclPacket::new(H, 2, 0, inbound)).unwrap();
         assert_eq!(scid2, CID_FIRST_DYNAMIC);
         assert_eq!(data, b"ping");
     }
