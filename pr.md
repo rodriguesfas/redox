@@ -34,6 +34,15 @@ Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perd
 
 ## Fila
 
+## 2026-10-12c — rings reais em TODOS os drivers
+
+- [DONE] Molde ath9k replicado em rtw88 (33/33), mt7921d (32+35), iwlwifi (33/33).
+- Contrato uniforme: descritores {off,len} + head/tail MMIO, slots 2048B,
+  gates EWOULDBLOCK/EINVAL/ENOBUFS, handle_tx_done consome, handle_rx_done noop.
+- Suite total: 165 testes verde nos 5 crates.
+- `cook base - successful` com os 4 daemons ring-ificados no base.pkgar.
+- PR#1 (fork): 12 commits, todo o trabalho; dev backup em fork+local bare.
+
 ## 2026-10-12b — datapath ath9k real
 
 - [DONE] Rings RX/TX reais no ath9k: descritores {off,len} + head/tail em MMIO,
