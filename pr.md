@@ -34,6 +34,15 @@ Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perd
 
 ## Fila
 
+## 2026-10-12h — #29 L2CAP userspace pronto (slice BT completo)
+
+- Canal ACL p/ userspace: arquivo `acl` no scheme bt (leitura drena fila; escrita
+  [dcid][payload] vai p/ bulk EP2); sinalizacao L2CAP (conn/cfg via CID 1)
+  processada no daemon; teste de canal completo (open SDP -> ConnRsp -> CfgRsp
+  -> open -> dados nos dois sentidos) com pacotes sinteticos reais.
+- btusd: 40 testes. #29 permanece aberta so por: SCO/audio (A2DP) + hw real.
+- proximo: proxima issue (ver ordem com cliente) OU SDP minimo dentro de BT.
+
 ## 2026-10-12g — #29 pairing implementado (SSP + PIN legado)
 
 - btusd 34 testes: codecs de conexao/SSP, maquina de pareamento completa
