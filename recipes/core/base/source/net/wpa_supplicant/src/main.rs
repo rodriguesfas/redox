@@ -2,7 +2,7 @@
 //!
 //! Implements WPA2/WPA3 authentication for WiFi drivers.
 
-use net80211::{Crypto, kdf};
+use net80211::crypto::kdf;
 use log::{info, warn, error};
 
 /// WPA2/3 key management
@@ -34,7 +34,11 @@ impl WpaSupplicant {
         let ssid = self.ssid.as_ref().ok_or("No SSID set")?;
 
         // PMK = PBKDF2-PSK-HMAC-SHA1(password, ssid, 4096, 32)
-        let psk = kdf::pbkdf2_sha1(password, std::str::from_utf8(ssid).unwrap(), 4096);
+        let psk = kdf::pbkdf2_sha1(
+            std::str::from_utf8(password).map_err(|_| "password não é UTF-8")?,
+            std::str::from_utf8(ssid).map_err(|_| "ssid não é UTF-8")?,
+            4096,
+        );
 
         Ok(psk)
     }

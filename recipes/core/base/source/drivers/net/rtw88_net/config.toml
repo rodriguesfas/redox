@@ -1,0 +1,7 @@
+[[drivers]]
+name = "Realtek WiFi 6/6E (rtw88)"
+class = 0x02
+ids = { 0x10EC = [
+    0xC852, 0xC853, 0xC854, 0xC855  # RTL8852AE/BE/CE/v2
+] }
+command = ["rtw88_net"]

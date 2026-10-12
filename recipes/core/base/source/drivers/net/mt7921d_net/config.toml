@@ -1,0 +1,5 @@
+[[drivers]]
+name = "MediaTek WiFi 6E (mt7921d)"
+class = 0x02
+ids = { 0x14C3 = [0x7961] }
+command = ["mt7921d_net"]

@@ -1,0 +1,9 @@
+[[drivers]]
+name = "Intel WiFi (iwlwifi)"
+class = 0x02
+ids = { 0x8086 = [
+    0x2720, 0x2721, 0x2723, 0x2725, # AX200/AX201/AX210 family
+    0x54F0, 0x54F1,                 # BE200 family
+    0x7AF0, 0x7AF1, 0x7DF0, 0x7DF1  # AX211/BE211 variants
+] }
+command = ["iwlwifi_net"]
