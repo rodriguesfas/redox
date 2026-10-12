@@ -1,43 +1,40 @@
 # WiFi driver batch — progresso persistente
 
-Atualizado: 2026-10-11 · branch `dev` (redox-os)
+Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perda do .git**
 
-## Git
+## Incidente (IMPORTANTE)
 
-- `dev` = master + cadeia WiFi (20 commits). Ath9k esquadrinhado p/ histórico limpo.
-- Push pendente: remoto é upstream público `github.com/redox-os/redox` — aguardando OK do usuário.
+- Às ~22:42 um processo externo (suspeita: sync/limpeza de `SSD_BACKUP`) **apagou os `.git`** de
+  `redox-os/` e do workspace `aios/`.
+- Arquivos-fonte intactos; histórico anterior se perdeu.
+- Reconstruído: clone upstream transplantado, `dev` reposta sobre `e2bf6961e` (upstream master),
+  commits refeitos por área a partir do estado final dos arquivos.
+- `pr.md` agora vive DENTRO do repo e commitado (antes era apagado na raiz).
 
-## Commits da sessão (mais novos primeiro)
+## Commits em dev (8, sobre e2bf6961e)
 
-1. `ac3ec7383` ath9k: upload real de firmware p/ SRAM (halt→stream→start→poll; 16/16 testes)
-2. `34aaa6d35` iwlwifi: última cópia do conversor FC bugado migrada p/ net80211 (−141 linhas)
-3. `e717b29e8` net80211: `Ccmp::decrypt`/`Gcmp::decrypt`, TKIP→Err, gcmp compila — zero `todo!()`
-4. `2a26b9fbe` net80211: Minstrel table descartada + `Ccm<U8,U13>` (9/9)
-5. `540aee10c` 4 wrappers *_net migrados p/ conversor central (−552 linhas duplicadas)
-6. `40cd77ad8` net80211: conversor central 802.11↔Ethernet, FC ToDS correto 0x0108 (5 testes)
-7. `3af47daee` ath9k_net: daemon network scheme
-8. `0a091561f` ath9k: `Firmware::load` real+fallback
-9. `3dff3e591` ath9k: lib TDD
+1. `85040ad48` iwlwifi driver (TDD)
+2. `…` rtw88 driver (TDD)
+3. `…` mt7921d driver (TDD)
+4. `…` net80211 stack comum
+5. `…` ath9k driver (TDD)
+6. `…` 4 daemons `*_net` + workspace member ath9k_net
+7. `…` wpa_supplicant + `platform/scripts/test-wifi.sh`
+8. `…` .gitignore unignore + este arquivo
 
-## Bugs reais corrigidos
+## Entregas (reconstruídas = estado final)
 
-- FC STA→AP TX era FromDS (0x0208) — copiado em 4 wrappers + lib iwlwifi. Agora 0x0108 em tudo.
-- `Minstrel::new` descartava RateTable populada → rate control sempre vazio.
-- `Ccm<Aes128,U12,U8>` invertido panicava no 1º encrypt CCMP; ordem certa é `<Aes128,U8,U13>`.
-- `Ccmp::decrypt` todo!() ⇒ panic se RX WPA2 chegasse. Implementado + teste MIC adulterado.
-
-## Suite
-
-- iwlwifi 27 · rtw88 26 · mt7921d 29 · ath9k 16 · net80211 10 (+gcmp) · wrappers OK
-- `cargo check` nos 4 daemons: Finished sem erro.
+- Drivers: iwlwifi 29t · rtw88 29t · mt7921d 28+31t · ath9k 16t · net80211 10t (+gcmp)
+- 4 daemons `*_net` compilam zero-erro
+- Upload de firmware real (SRAM window + START/poll) nas 4 libs, testado com BAR fake
+- Conversor 802.11↔Ethernet único em `net80211::ieee80211` (FC ToDS 0x0108 — bug FromDS eliminado)
+- CCMP decrypt real (MIC verificado); zero `todo!()` no net80211
+- Itens pré-existentes do usuário NÃO commitados: recipe.toml pins, aios-src/, recipes/aios/,
+  patches nvmed/relibc, intel-ucode/, linux-firmware/
 
 ## Fila
 
-- [PENDING] Upload real de firmware nos outros 3 drivers (rtw88/mt7921d/iwlwifi precisam de staging via TXQ — chip-specific); molde: ath9k `Mac::upload_firmware`.
-- [PENDING] Teste hardware/QEMU passthrough WiFi.
-- [PENDING] Push origin dev + PRs (aguardando OK).
-
-## Notas
-
-- Progresso fica DENTRO do repo (arquivo de fora do repo estava sendo apagado por processo externo).
-- Sem stash; TDD; commits por peça; merge→dev após implementar.
+- [PENDING] Push `origin dev` (remoto = upstream público redox-os/redox — precisa de fork/OK)
+- [PENDING] Build cookbook completo (`make` da base) para provar empacotamento
+- [PENDING] Teste hardware/QEMU passthrough WiFi
+- [TODO-USER] Decidir destino de `aios-src/`, `recipes/aios/`, patches soltos
