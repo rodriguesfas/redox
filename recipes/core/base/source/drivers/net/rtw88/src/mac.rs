@@ -154,36 +154,16 @@ impl Mac {
     }
 
     pub fn handle_tx_done(&mut self) {
-        for queue in &mut self.tx_queues {
-            while queue.head != queue.tail {
-                let idx = queue.head;
-                let desc_offset = idx * core::mem::size_of::<TxDescriptor>();
-                let desc_ptr = unsafe { queue.base.add(desc_offset) as *const TxDescriptor };
-                let desc = unsafe { core::ptr::read_volatile(desc_ptr) };
-
-                if desc.flags & TX_DESC_OWN != 0 {
-                    break; // Still owned by hardware
-                }
-
-                queue.head = (queue.head + 1) % queue.count;
-            }
-        }
+        // Hardware concluiu os TX pendentes: consome todos ate o head.
+        let head = unsafe { core::ptr::read_volatile(self.regs.add(crate::regs::REG_TXQ_HEAD)) };
+        unsafe { core::ptr::write_volatile(self.regs.add(crate::regs::REG_TXQ_TAIL), head) };
     }
+
 
     pub fn handle_rx_done(&mut self) {
-        while self.rx_queue.head != self.rx_queue.tail {
-            let idx = self.rx_queue.head;
-            let desc_offset = idx * core::mem::size_of::<RxDescriptor>();
-            let desc_ptr = unsafe { self.rx_queue.base.add(desc_offset) as *const RxDescriptor };
-            let desc = unsafe { core::ptr::read_volatile(desc_ptr) };
-
-            if desc.flags & RX_DESC_OWN != 0 {
-                break; // Still owned by hardware
-            }
-
-            self.rx_queue.head = (self.rx_queue.head + 1) % self.rx_queue.count;
-        }
+        // Frames RX ficam na ring ate read_packets() consumir; nada a avancar aqui.
     }
+
 
     pub fn handle_beacon(&mut self) {
         if self.associated {
@@ -268,50 +248,75 @@ impl Mac {
     }
 
     pub fn read_packets(&mut self, buf: &mut [u8]) -> Result<usize, SchemeError> {
-        if self.rx_queue.head == self.rx_queue.tail {
+        // Pop de 1 frame da RX ring (descritores em MMIO). Ok(0) se vazio.
+        let (head, tail) = unsafe {
+            (
+                core::ptr::read_volatile(self.regs.add(crate::regs::REG_RXQ_HEAD)),
+                core::ptr::read_volatile(self.regs.add(crate::regs::REG_RXQ_TAIL)),
+            )
+        };
+        if head == tail {
             return Ok(0);
         }
-
-        // In real implementation, copy from RX descriptors
-        // For now, return dummy data
-        let len = core::cmp::min(buf.len(), 1500);
-        buf[..len].fill(0);
-        Ok(len)
+        let desc = crate::regs::REG_RXQ_RING + (tail % crate::regs::RING_LEN) as usize * crate::regs::RING_DESC_WORDS;
+        let (off_words, len) = unsafe {
+            (
+                core::ptr::read_volatile(self.regs.add(desc)) as usize,
+                core::ptr::read_volatile(self.regs.add(desc + 1)) as usize,
+            )
+        };
+        let n = core::cmp::min(len, buf.len());
+        for (i, out) in buf[..n].chunks_mut(4).enumerate() {
+            let w = unsafe { core::ptr::read_volatile(self.regs.add(crate::regs::RX_DATA_WINDOW + off_words + i)) };
+            let bytes = w.to_le_bytes();
+            out.copy_from_slice(&bytes[..out.len()]);
+        }
+        unsafe {
+            core::ptr::write_volatile(self.regs.add(desc), 0);
+            core::ptr::write_volatile(self.regs.add(desc + 1), 0);
+            core::ptr::write_volatile(self.regs.add(crate::regs::REG_RXQ_TAIL), tail.wrapping_add(1));
+        }
+        Ok(n)
     }
+
 
     pub fn write_packets(&mut self, buf: &[u8]) -> Result<usize, SchemeError> {
-        // Find available TX queue (use queue 0 for now)
-        let queue = &mut self.tx_queues[0];
-        let next_tail = (queue.tail + 1) % queue.count;
-
-        if next_tail == queue.head {
+        if !self.associated {
+            return Err(SchemeError::new(syscall::EWOULDBLOCK));
+        }
+        if buf.len() > crate::regs::FRAME_SLOT_BYTES {
+            return Err(SchemeError::new(syscall::EINVAL));
+        }
+        let (head, tail) = unsafe {
+            (
+                core::ptr::read_volatile(self.regs.add(crate::regs::REG_TXQ_HEAD)),
+                core::ptr::read_volatile(self.regs.add(crate::regs::REG_TXQ_TAIL)),
+            )
+        };
+        if head.wrapping_sub(tail) >= crate::regs::RING_LEN {
             return Err(SchemeError::new(syscall::ENOBUFS));
         }
-
-        // Build TX descriptor
-        let desc = TxDescriptor {
-            addr_low: buf.as_ptr() as u32,
-            addr_high: 0,
-            length: buf.len() as u32,
-            flags: TX_DESC_OWN | TX_DESC_FS | TX_DESC_LS,
-        };
-
-        // Write descriptor to ring
-        let desc_offset = queue.tail * core::mem::size_of::<TxDescriptor>();
-        unsafe {
-            let desc_ptr = queue.base.add(desc_offset) as *mut TxDescriptor;
-            core::ptr::write_volatile(desc_ptr, desc);
+        let slot = (head % crate::regs::RING_LEN) as usize;
+        let off_words = slot * crate::regs::FRAME_SLOT_WORDS;
+        for (i, chunk) in buf.chunks(4).enumerate() {
+            let mut word = [0u8; 4];
+            word[..chunk.len()].copy_from_slice(chunk);
+            unsafe {
+                core::ptr::write_volatile(
+                    self.regs.add(crate::regs::TX_DATA_WINDOW + off_words + i),
+                    u32::from_le_bytes(word),
+                );
+            }
         }
-
-        queue.tail = next_tail;
-
-        // Ring doorbell
+        let desc = crate::regs::REG_TXQ_RING + slot * crate::regs::RING_DESC_WORDS;
         unsafe {
-            core::ptr::write_volatile(self.regs.add(REG_TXQ_CTRL), TXQ_CTRL_EN);
+            core::ptr::write_volatile(self.regs.add(desc), off_words as u32);
+            core::ptr::write_volatile(self.regs.add(desc + 1), buf.len() as u32);
+            core::ptr::write_volatile(self.regs.add(crate::regs::REG_TXQ_HEAD), head.wrapping_add(1));
         }
-
         Ok(buf.len())
     }
+
 
     pub fn current_essid(&self) -> Vec<u8> {
         if self.associated {
@@ -465,5 +470,98 @@ mod fw_upload_tests {
         assert!(super::do_upload(regs, &[]).is_err());
         let ctrl = unsafe { core::ptr::read_volatile(regs.add(crate::regs::REG_FW_CTRL)) };
         assert_eq!(ctrl, 0);
+    }
+}
+
+#[cfg(test)]
+mod ring_tests {
+    use super::*;
+    use alloc::sync::Arc;
+
+    fn fake_bar() -> (alloc::boxed::Box<[u32]>, *mut u32) {
+        let mut v = alloc::vec![0u32; 0xC001].into_boxed_slice();
+        let p = v.as_mut_ptr();
+        (v, p)
+    }
+
+    fn mac_on(regs: *mut u32) -> Mac {
+        let efuse = crate::efuse::Efuse::read_efuse(regs);
+        let fw = crate::fw::Firmware::load("/nonexistent/rtw88.fw").expect("mock fw");
+        Mac::new(regs, &Arc::clone(&fw), &efuse).expect("mac init")
+    }
+
+    fn write_word(regs: *mut u32, idx: usize, v: u32) {
+        unsafe { core::ptr::write_volatile(regs.add(idx), v) };
+    }
+    fn read_word(regs: *mut u32, idx: usize) -> u32 {
+        unsafe { core::ptr::read_volatile(regs.add(idx)) }
+    }
+
+    #[test]
+    fn rx_empty_ring_returns_zero() {
+        let (_bar, regs) = fake_bar();
+        let mut mac = mac_on(regs);
+        let mut buf = [0u8; 128];
+        assert_eq!(mac.read_packets(&mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn rx_reads_seeded_frame_and_recycles_slot() {
+        let (_bar, regs) = fake_bar();
+        let mut mac = mac_on(regs);
+
+        let payload = b"RTW88 RX FRAME";
+        let off_words = crate::regs::FRAME_SLOT_WORDS * 2; // slot 2
+        for (i, chunk) in payload.chunks(4).enumerate() {
+            let mut w = [0u8; 4];
+            w[..chunk.len()].copy_from_slice(chunk);
+            write_word(regs, crate::regs::RX_DATA_WINDOW + off_words + i, u32::from_le_bytes(w));
+        }
+        write_word(regs, crate::regs::REG_RXQ_RING, off_words as u32);
+        write_word(regs, crate::regs::REG_RXQ_RING + 1, payload.len() as u32);
+        write_word(regs, crate::regs::REG_RXQ_HEAD, 1);
+
+        let mut buf = [0u8; 1518];
+        let n = mac.read_packets(&mut buf).unwrap();
+        assert_eq!(n, payload.len());
+        assert_eq!(&buf[..n], payload);
+
+        assert_eq!(read_word(regs, crate::regs::REG_RXQ_TAIL), 1);
+        assert_eq!(read_word(regs, crate::regs::REG_RXQ_RING), 0);
+        assert_eq!(mac.read_packets(&mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn tx_writes_slot_and_bumps_head() {
+        let (_bar, regs) = fake_bar();
+        let mut mac = mac_on(regs);
+        mac.associated = true;
+
+        let frame: alloc::vec::Vec<u8> = alloc::vec![0xCD; 100];
+        assert_eq!(mac.write_packets(&frame).unwrap(), 100);
+        assert_eq!(read_word(regs, crate::regs::REG_TXQ_HEAD), 1);
+        assert_eq!(read_word(regs, crate::regs::REG_TXQ_RING + 1), 100);
+        assert_eq!(read_word(regs, crate::regs::TX_DATA_WINDOW), 0xCDCD_CDCD);
+    }
+
+    #[test]
+    fn tx_gates_e_ring_cheio() {
+        let (_bar, regs) = fake_bar();
+        let mut mac = mac_on(regs);
+        let frame = [1u8; 64];
+        assert_eq!(mac.write_packets(&frame).unwrap_err().errno, syscall::EWOULDBLOCK);
+
+        mac.associated = true;
+        let big = alloc::vec![0u8; 3000];
+        assert_eq!(mac.write_packets(&big).unwrap_err().errno, syscall::EINVAL);
+
+        write_word(regs, crate::regs::REG_TXQ_HEAD, crate::regs::RING_LEN);
+        write_word(regs, crate::regs::REG_TXQ_TAIL, 0);
+        assert_eq!(mac.write_packets(&frame).unwrap_err().errno, syscall::ENOBUFS);
+
+        // handle_tx_done consome tudo -> ring livre
+        mac.handle_tx_done();
+        assert_eq!(read_word(regs, crate::regs::REG_TXQ_TAIL), crate::regs::RING_LEN);
+        assert!(mac.write_packets(&frame).is_ok());
     }
 }
