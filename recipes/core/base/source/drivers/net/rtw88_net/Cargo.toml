@@ -1,0 +1,25 @@
+[package]
+name = "rtw88_net"
+description = "Realtek WiFi 6/6E driver network scheme binary"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rtw88 = { path = "../rtw88" }
+driver-network = { path = "../driver-network" }
+net80211 = { path = "../net80211" }
+daemon = { path = "../../../daemon" }
+common = { path = "../../common" }
+pcid = { path = "../../pcid" }
+libredox.workspace = true
+log.workspace = true
+redox_event.workspace = true
+redox-scheme = "0.11"
+redox_syscall = { workspace = true, features = ["std"] }
+scheme-utils = { path = "../../../scheme-utils" }
+
+[features]
+default = []
+
+[lints]
+workspace = true

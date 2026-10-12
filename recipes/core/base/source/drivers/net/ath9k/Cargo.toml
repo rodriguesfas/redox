@@ -1,0 +1,24 @@
+[package]
+name = "ath9k"
+description = "Atheros ath9k WiFi driver (AR9271/AR928x/AR938x/AR9462) for Redox OS"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bitflags.workspace = true
+libredox.workspace = true
+libc.workspace = true
+log.workspace = true
+redox_syscall = { workspace = true, features = ["std"] }
+smallvec.workspace = true
+scheme-utils = { path = "../../../scheme-utils" }
+
+common = { path = "../../common" }
+driver-network = { path = "../driver-network" }
+net80211 = { path = "../net80211" }
+
+[features]
+default = []
+
+[lints]
+workspace = true

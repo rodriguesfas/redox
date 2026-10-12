@@ -1,0 +1,20 @@
+[package]
+name = "wpa_supplicant"
+description = "WPA2/WPA3 supplicant for Redox OS"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log.workspace = true
+libredox.workspace = true
+redox_syscall = { workspace = true, features = ["std"] }
+common = { path = "../../drivers/common" }
+daemon = { path = "../../daemon" }
+net80211 = { path = "../../drivers/net/net80211" }
+smallvec.workspace = true
+
+[features]
+default = []
+
+[lints]
+workspace = true
