@@ -34,6 +34,14 @@ Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perd
 
 ## Fila
 
+## 2026-10-12b — datapath ath9k real
+
+- [DONE] Rings RX/TX reais no ath9k: descritores {off,len} + head/tail em MMIO,
+  slots de 2048B na SRAM window; RX pop/limpa/recicla, TX publish+bump com
+  backpressure (EWOULDBLOCK) — 5 testes com BAR fake (22/22 ath9k).
+- Commit `597ce7a4` em dev; cherry-pick `4daf5a2` no branch do PR#1 (9 commits).
+  Nota: hashes do PR diferem visualmente pq o gh jq cortou o fim do oid — sem divergencia real.
+
 ## 2026-10-12 (1,2,4 resolvidos; 3 em andamento)
 
 - [DONE] 1 PR: https://github.com/rodriguesfas/redox/pull/1 (GraphQL bloqueado; REST OK). Upstream redox-os/redox requer GitLab MR — pendente de decisão.
