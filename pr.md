@@ -34,6 +34,16 @@ Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perd
 
 ## Fila
 
+## 2026-10-12f — btusd completo nesse slice (#29 avancou)
+
+- [DONE] btusd agora e daemon de verdade: probe -> scheme `bt` registrado
+  (ctl/status/devices/event) -> loop servindo userspace + eventos USB.
+- [DONE] inquiry funcional (cmd 0x0401 GIAC + parse result/RSSI + dedup).
+- [DONE] framing L2CAP (ACL pack/decode, streams).
+- 22 testes btusd; cook base ok com btusd no pacote.
+- #29 ainda aberta: falta pairing (L2CAP SDP/psm, passkey) + HCI scheme
+  de dados ACL p/ userspace (fundacao pronta).
+
 ## 2026-10-12e — Issue #29 (BT) iniciado
 
 - WiFi issues #25/#40/#41/#42/#43 FECHADAS com evidencia (PR#1 + cook ok + 165 testes).
