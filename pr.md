@@ -34,6 +34,15 @@ Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perd
 
 ## Fila
 
+## 2026-10-12g — #29 pairing implementado (SSP + PIN legado)
+
+- btusd 34 testes: codecs de conexao/SSP, maquina de pareamento completa
+  (JustWorks auto-accept, PIN fallback, link keys por BD_ADDR), ctl
+  `pair aa:bb:..`/`pin`, teste E2E via eventos sinteticos, bug bool-default.
+- cook base ok com tudo isso no pacote.
+- #29 segue aberta por escopo: faltam L2CAP userspace (canais ACL p/ apps)
+  e teste com dispositivo BT real (emparelhar fone). Software: pronto.
+
 ## 2026-10-12f — btusd completo nesse slice (#29 avancou)
 
 - [DONE] btusd agora e daemon de verdade: probe -> scheme `bt` registrado
