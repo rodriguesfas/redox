@@ -79,6 +79,7 @@ members = [
     "drivers/usb/xhcid",
     "drivers/usb/usbctl",
     "drivers/usb/usbhubd",
+    "drivers/usb/btusd",
 ]
 
 # Bootstrap needs it's own profile configuration

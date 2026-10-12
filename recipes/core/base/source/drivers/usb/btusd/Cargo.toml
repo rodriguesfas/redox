@@ -1,0 +1,25 @@
+[package]
+name = "btusd"
+description = "Bluetooth USB (HCI / btusb-style) driver for Redox OS"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+libredox.workspace = true
+redox_event.workspace = true
+redox_syscall = { workspace = true, features = ["std"] }
+log.workspace = true
+
+daemon = { path = "../../../daemon" }
+common = { path = "../../common" }
+xhcid = { path = "../xhcid" }
+driver-block = { path = "../../storage/driver-block" }
+plain.workspace = true
+thiserror.workspace = true
+
+[features]
+default = []
+
+[lints]
+workspace = true
