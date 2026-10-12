@@ -80,6 +80,7 @@ members = [
     "drivers/usb/usbctl",
     "drivers/usb/usbhubd",
     "drivers/usb/btusd",
+    "drivers/i2c/dwd",
 ]
 
 # Bootstrap needs it's own profile configuration

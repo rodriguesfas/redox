@@ -1,0 +1,17 @@
+[package]
+name = "i2c-dwd"
+description = "Synopsys DesignWare I2C host controller driver (master mode)"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+libredox.workspace = true
+redox_syscall = { workspace = true, features = ["std"] }
+log.workspace = true
+
+[features]
+default = []
+
+[lints]
+workspace = true
