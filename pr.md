@@ -34,6 +34,15 @@ Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perd
 
 ## Fila
 
+## 2026-10-12i — items 1, 2, 3 da ordem "seguir 1 2 3"
+
+1. [DONE] SDP minimal (btusd): codec+registry+server, inbound channels. 51 testes.
+2. [DONE] i2c-dwd (DesignWare I2C master, Acer touchpad) — inicio da issue #31.
+3. [DONE] hw-validate.sh: passthrough MT7921 validavel (IOMMU group 17 isolado).
+   --dangerous so com consentimento explicito do usuario.
+- dev@5f54d5763 pushed p/ fork+backup.
+- pronto p/ RFC ou jump p/ #31 (input) de verdade.
+
 ## 2026-10-12h — #29 L2CAP userspace pronto (slice BT completo)
 
 - Canal ACL p/ userspace: arquivo `acl` no scheme bt (leitura drena fila; escrita
