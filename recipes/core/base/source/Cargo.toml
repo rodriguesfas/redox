@@ -54,6 +54,7 @@ members = [
     "drivers/net/rtl8168d",
     "drivers/net/ath9k",
     "drivers/net/ath9k_net",
+    "net/wpa_supplicant",
     "drivers/net/iwlwifi",
     "drivers/net/iwlwifi_net",
     "drivers/net/rtw88",

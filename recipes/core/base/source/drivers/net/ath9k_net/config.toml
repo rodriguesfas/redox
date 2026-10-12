@@ -1,0 +1,8 @@
+[[drivers]]
+name = "Atheros WiFi (ath9k)"
+class = 0x02
+# NB: 0x002B (AR9271) e USB, nao passa pelo pcid; IDs abaixo sao PCI.
+ids = { 0x168C = [
+    0x0029, 0x0030, 0x0031, 0x0032, 0x0033, 0x0034, 0x0035
+] }
+command = ["ath9k_net"]
