@@ -33,6 +33,25 @@ pub const FW_CTRL_START: u32 = 0x0000_0001;
 /// FW_STATUS: read 0 = engine ready/idle (accepts upload or running).
 pub const FW_STATUS_BUSY: u32 = 0x0000_0001;
 
+// ==== RX/TX descriptor rings ====
+/// Descriptors per ring.
+pub const RING_LEN: u32 = 32;
+/// Descriptor: {off_words, len_bytes, flags, rsvd} — 4 words.
+pub const RING_DESC_WORDS: usize = 4;
+/// Word offset of the TX/RX descriptor rings.
+pub const REG_TXQ_RING: usize = 0x2800;
+pub const REG_RXQ_RING: usize = 0x2880;
+/// Ring head/tail registers (monotonic counters; slot = counter % RING_LEN).
+pub const REG_TXQ_HEAD: usize = 0x2A00;
+pub const REG_TXQ_TAIL: usize = 0x2A01;
+pub const REG_RXQ_HEAD: usize = 0x2A02;
+pub const REG_RXQ_TAIL: usize = 0x2A03;
+/// Word offsets where frame payloads live (fixed 2048-byte slots).
+pub const TX_DATA_WINDOW: usize = 0x4000;
+pub const RX_DATA_WINDOW: usize = 0x8000;
+pub const FRAME_SLOT_BYTES: usize = 2048;
+pub const FRAME_SLOT_WORDS: usize = FRAME_SLOT_BYTES / 4;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,6 +80,17 @@ mod tests {
         assert_eq!(INT_TX_DONE & INT_RX_DONE, 0);
         assert_eq!(INT_TX_DONE & INT_TBTT, 0);
         assert_eq!(INT_RX_DONE & INT_TBTT, 0);
+    }
+
+    #[test]
+    fn ring_layout_sane() {
+        use super::*;
+        assert_eq!(REG_TXQ_RING + RING_LEN as usize * RING_DESC_WORDS, REG_RXQ_RING);
+        assert!(REG_RXQ_RING + RING_LEN as usize * RING_DESC_WORDS <= REG_TXQ_HEAD);
+        // fw staging (0x2000..) e rings/data nao podem se sobrepor
+        assert!(REG_FW_CTRL < REG_TXQ_RING);
+        // TX window (32 x 512 words) nao pode invadir a RX window
+        assert!(TX_DATA_WINDOW + RING_LEN as usize * FRAME_SLOT_WORDS <= RX_DATA_WINDOW);
     }
 
     #[test]
