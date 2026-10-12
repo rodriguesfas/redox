@@ -34,6 +34,13 @@ Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perd
 
 ## Fila
 
+## 2026-10-12e — Issue #29 (BT) iniciado
+
+- WiFi issues #25/#40/#41/#42/#43 FECHADAS com evidencia (PR#1 + cook ok + 165 testes).
+- Bt USD: btusd (HCI over USB, classe 0xE0/1/1) — codec HCI + probe machine, 11 testes,
+  empacotado no base.pkgar (cook base successful). Drivers.toml xhcid atualizado.
+- Nao fechei #29: falta scheme HCI p/ userspace + L2CAP + pairing.
+
 ## 2026-10-12d — PIPELINE DE CONEXAO fechado (scan/assoc/handshake)
 
 - [DONE] net80211::link — maquina de estados Disconnected->Scanning->Associating->Associated
