@@ -138,3 +138,17 @@ pub mod regsfw {
     pub use super::MT7921_FW_CTRL_START as FW_CTRL_START;
     pub use super::MT7921_FW_STATUS_BUSY as FW_STATUS_BUSY;
 }
+
+// ==== RX/TX descriptor rings (device MMIO contract) ====
+pub const RING_LEN: u32 = 32;
+pub const RING_DESC_WORDS: usize = 4;
+pub const REG_TXQ_RING: usize = 0x7000;
+pub const REG_RXQ_RING: usize = 0x7080;
+pub const REG_TXQ_HEAD: usize = 0x7100;
+pub const REG_TXQ_TAIL: usize = 0x7101;
+pub const REG_RXQ_HEAD: usize = 0x7102;
+pub const REG_RXQ_TAIL: usize = 0x7103;
+pub const TX_DATA_WINDOW: usize = 0x8000;
+pub const RX_DATA_WINDOW: usize = 0xC000;
+pub const FRAME_SLOT_BYTES: usize = 2048;
+pub const FRAME_SLOT_WORDS: usize = FRAME_SLOT_BYTES / 4;
