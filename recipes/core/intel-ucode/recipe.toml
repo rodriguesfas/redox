@@ -1,0 +1,14 @@
+# Intel microcode updates (overlay; lives in THIS repo, not upstream).
+# Needed by the ai-developer x86_64 profile for the Acer Nitro hardware target.
+# Source: Intel official microcode releases (https://github.com/intel/Intel-Linux-Processor-Microcode-Data-Files)
+[source]
+tar = "https://github.com/aios-b-612/aios/releases/download/microcode-20260925/intel-ucode-20260925.tar.gz"
+blake3 = "4b8ada1e00874d0ef9a465a4d4ed8ed050c9c4324e6acefbb8427da95a7cf52e"
+
+[build]
+template = "custom"
+script = """
+cd "${COOKBOOK_SOURCE}"
+mkdir -p "${COOKBOOK_STAGE}/lib/firmware/intel-ucode"
+cp -v * "${COOKBOOK_STAGE}/lib/firmware/intel-ucode/"
+"""

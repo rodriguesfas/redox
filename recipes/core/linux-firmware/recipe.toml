@@ -1,0 +1,37 @@
+# Linux firmware blobs for the Acer Nitro target (overlay; lives in THIS repo,
+# not upstream). shallow_clone keeps the clone small -- a full linux-firmware
+# checkout is hundreds of MB we never install.
+#
+# The `|| true` on every copy is deliberate: the bring-up only needs what the
+# machine has, and a blob missing upstream must not kill the image build. What
+# the hardware actually needs is verified on the device, not here.
+[source]
+git = "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git"
+shallow_clone = true
+
+[build]
+template = "custom"
+script = """
+cd "${COOKBOOK_SOURCE}"
+mkdir -p "${COOKBOOK_STAGE}/lib/firmware"
+
+# Intel GPU firmware (GuC/HuC for i915)
+cp -r intel/ "${COOKBOOK_STAGE}/lib/firmware/" 2>/dev/null || true
+
+# MediaTek MT7921 WiFi/BT firmware
+cp -r mediatek/ "${COOKBOOK_STAGE}/lib/firmware/" 2>/dev/null || true
+
+# Intel WiFi firmware (iwlwifi)
+cp -r iwlwifi/ "${COOKBOOK_STAGE}/lib/firmware/" 2>/dev/null || true
+
+# Realtek WiFi firmware (rtw88/rtw89)
+cp -r rtw88/ "${COOKBOOK_STAGE}/lib/firmware/" 2>/dev/null || true
+cp -r rtw89/ "${COOKBOOK_STAGE}/lib/firmware/" 2>/dev/null || true
+
+# Realtek RTL8168 firmware
+mkdir -p "${COOKBOOK_STAGE}/lib/firmware/rtl_nic"
+cp rtl_nic/rtl8168* "${COOKBOOK_STAGE}/lib/firmware/rtl_nic/" 2>/dev/null || true
+
+# Intel Bluetooth firmware
+cp intel/ibt-* "${COOKBOOK_STAGE}/lib/firmware/intel/" 2>/dev/null || true
+"""
