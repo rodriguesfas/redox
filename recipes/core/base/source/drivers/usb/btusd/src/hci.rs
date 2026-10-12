@@ -321,3 +321,299 @@ mod inquiry_tests {
         assert_eq!(CMD_INQUIRY_CANCEL, 0x0402);
     }
 }
+
+// ==== Conexao / Pareamento (SSP + legado PIN) ====
+
+// OGF 0x01 (Link Control) — opcodes reais por BT spec v5.x
+/// Create Connection
+pub const CMD_CREATE_CONNECTION: u16 = opcode(OGF_LINK_CONTROL, 0x005); // 0x0405
+/// Accept Connection Request
+pub const CMD_ACCEPT_CONNECTION: u16 = opcode(OGF_LINK_CONTROL, 0x009); // 0x0409
+/// Reject Connection Request
+pub const CMD_REJECT_CONNECTION: u16 = opcode(OGF_LINK_CONTROL, 0x00A); // 0x040A
+/// Link Key Request Reply (com chave de 16B)
+pub const CMD_LINK_KEY_REPLY: u16 = opcode(OGF_LINK_CONTROL, 0x00B); // 0x040B
+/// Link Key Request Negative Reply
+pub const CMD_LINK_KEY_NEGREPLY: u16 = opcode(OGF_LINK_CONTROL, 0x00C); // 0x040C
+/// PIN Code Request Reply
+pub const CMD_PIN_REPLY: u16 = opcode(OGF_LINK_CONTROL, 0x00D); // 0x040D
+/// PIN Code Request Negative Reply
+pub const CMD_PIN_NEGREPLY: u16 = opcode(OGF_LINK_CONTROL, 0x00E); // 0x040E
+/// Authentication Requested
+pub const CMD_AUTH_REQUESTED: u16 = opcode(OGF_LINK_CONTROL, 0x011); // 0x0411
+/// Set Connection Encryption
+pub const CMD_SET_CONN_ENCRYPT: u16 = opcode(OGF_LINK_CONTROL, 0x013); // 0x0413
+/// Remote Name Request
+pub const CMD_REMOTE_NAME_REQ: u16 = opcode(OGF_LINK_CONTROL, 0x019); // 0x0419
+
+// OGF 0x03 (HC & Baseband)
+/// Write Simple Pairing Mode (1 = enable SSP)
+pub const CMD_WRITE_SSP_MODE: u16 = opcode(OGF_HC_BASEBAND, 0x056); // 0x0C56
+
+// OGF 0x01 novamente (SSP inputs)
+/// IO Capability Request Reply
+pub const CMD_IO_CAP_REPLY: u16 = opcode(OGF_LINK_CONTROL, 0x02B); // 0x042B
+/// User Confirmation Request Reply
+pub const CMD_USER_CONFIRM_REPLY: u16 = opcode(OGF_LINK_CONTROL, 0x02C); // 0x042C
+/// User Confirmation Negative Reply
+pub const CMD_USER_CONFIRM_NEGREPLY: u16 = opcode(OGF_LINK_CONTROL, 0x02D); // 0x042D
+
+// --- Eventos de conexao/SSP ---
+pub const EVT_CONNECTION_COMPLETE: u8 = 0x03;
+pub const EVT_CONNECTION_REQUEST: u8 = 0x04;
+pub const EVT_AUTH_COMPLETE: u8 = 0x06;
+pub const EVT_REMOTE_NAME_COMPLETE: u8 = 0x07;
+pub const EVT_ENCRYPTION_CHANGE: u8 = 0x08;
+pub const EVT_PIN_CODE_REQ: u8 = 0x16;
+pub const EVT_LINK_KEY_REQ: u8 = 0x17;
+pub const EVT_LINK_KEY_NOTIF: u8 = 0x18;
+pub const EVT_IO_CAP_REQ: u8 = 0x31;
+pub const EVT_USER_CONFIRM_REQ: u8 = 0x33;
+pub const EVT_SSP_COMPLETE: u8 = 0x36;
+
+/// Create Connection: [bd 6][packet_type u16 LE (0xCC18 = DH1/DH3/DH5/2DH*
+/// mask comum)][page_scan_rep][page_scan_mode][clock_offset u16][allow_role]
+pub fn cmd_create_connection(bd: [u8; 6]) -> HciCommand {
+    let mut p = Vec::with_capacity(13);
+    p.extend_from_slice(&bd);
+    p.extend_from_slice(&0xCC18u16.to_le_bytes());
+    p.push(0x01); // R1
+    p.push(0x00); // mandatory page scan mode
+    p.extend_from_slice(&0u16.to_le_bytes()); // clock offset desconhecido
+    p.push(0x00); // nao aceita virar master? 0 = stay slave
+    HciCommand::with_params(CMD_CREATE_CONNECTION, p)
+}
+
+/// Accept Connection Request: [bd][role]
+pub fn cmd_accept_connection(bd: [u8; 6], role_slave: bool) -> HciCommand {
+    HciCommand::with_params(
+        CMD_ACCEPT_CONNECTION,
+        {
+            let mut v = Vec::with_capacity(7);
+            v.extend_from_slice(&bd);
+            v.push(u8::from(role_slave));
+            v
+        },
+    )
+}
+
+/// Write SSP Mode param: 1 byte habilita
+pub fn cmd_write_ssp_mode(enabled: bool) -> HciCommand {
+    HciCommand::with_params(CMD_WRITE_SSP_MODE, alloc::vec![u8::from(enabled)])
+}
+
+/// PIN reply: [bd][pin_len][pin ASCII]
+pub fn cmd_pin_reply(bd: [u8; 6], pin: &str) -> HciCommand {
+    let mut v = Vec::new();
+    v.extend_from_slice(&bd);
+    v.push(pin.len() as u8);
+    let bytes = pin.as_bytes();
+    v.extend_from_slice(bytes.iter().copied().take(16).collect::<Vec<u8>>().as_slice());
+    HciCommand::with_params(CMD_PIN_REPLY, v)
+}
+
+/// IO Cap Reply: [bd][io_cap][oob_present][auth_req]
+/// JustWorks == io_cap=DisplayYesNo(0x01) ou NoInputNoOutput(0x03), oob=0, auth=0
+pub fn cmd_io_cap_reply(bd: [u8; 6], io_cap: u8, auth_req: u8) -> HciCommand {
+    let mut v = Vec::with_capacity(10);
+    v.extend_from_slice(&bd);
+    v.push(io_cap);
+    v.push(0);
+    v.push(auth_req);
+    HciCommand::with_params(CMD_IO_CAP_REPLY, v)
+}
+
+pub const IO_CAP_DISPLAY_YESNO: u8 = 0x01;
+pub const IO_CAP_NO_INPUT_NO_OUTPUT: u8 = 0x03;
+
+/// User Confirm Reply: [bd]
+pub fn cmd_user_confirm_reply(bd: [u8; 6]) -> HciCommand {
+    HciCommand::with_params(CMD_USER_CONFIRM_REPLY, bd.to_vec())
+}
+
+/// Link Key Reply: [bd][key16]
+pub fn cmd_link_key_reply(bd: [u8; 6], key: [u8; 16]) -> HciCommand {
+    let mut v = Vec::with_capacity(22);
+    v.extend_from_slice(&bd);
+    v.extend_from_slice(&key);
+    HciCommand::with_params(CMD_LINK_KEY_REPLY, v)
+}
+
+/// Auth requested: [handle u16]
+pub fn cmd_auth_requested(handle: u16) -> HciCommand {
+    HciCommand::with_params(CMD_AUTH_REQUESTED, handle.to_le_bytes().to_vec())
+}
+
+/// Set connection encryption: [handle][enable]
+pub fn cmd_set_conn_encrypt(handle: u16, enable: bool) -> HciCommand {
+    let mut v = Vec::with_capacity(3);
+    v.extend_from_slice(&handle.to_le_bytes());
+    v.push(u8::from(enable));
+    HciCommand::with_params(CMD_SET_CONN_ENCRYPT, v)
+}
+
+// ---- Event parsers ----
+
+/// [status][handle u16][bd][link_type][encrypt]
+pub fn parse_connection_complete(params: &[u8]) -> Option<(u8, u16, [u8; 6])> {
+    if params.len() < 11 {
+        return None;
+    }
+    let status = params[0];
+    let handle = u16::from_le_bytes([params[1], params[2]]);
+    let mut bd = [0u8; 6];
+    bd.copy_from_slice(&params[3..9]);
+    Some((status, handle, bd))
+}
+
+/// [bd][class 3][link_type]
+pub fn parse_connection_request(params: &[u8]) -> Option<[u8; 6]> {
+    if params.len() < 10 {
+        return None;
+    }
+    let mut bd = [0u8; 6];
+    bd.copy_from_slice(&params[..6]);
+    Some(bd)
+}
+
+/// [status][handle]
+pub fn parse_status_handle(params: &[u8]) -> Option<(u8, u16)> {
+    if params.len() < 3 {
+        return None;
+    }
+    let handle = u16::from_le_bytes([params[1], params[2]]);
+    Some((params[0], handle))
+}
+
+/// [bd] simplesmente
+pub fn parse_bd_addr_event(params: &[u8]) -> Option<[u8; 6]> {
+    if params.len() < 6 {
+        return None;
+    }
+    let mut bd = [0u8; 6];
+    bd.copy_from_slice(&params[..6]);
+    Some(bd)
+}
+
+/// Link Key Notification: [bd 6][key 16][key_type]
+pub fn parse_link_key_notif(params: &[u8]) -> Option<([u8; 6], [u8; 16], u8)> {
+    if params.len() < 23 {
+        return None;
+    }
+    let mut bd = [0u8; 6];
+    bd.copy_from_slice(&params[..6]);
+    let mut key = [0u8; 16];
+    key.copy_from_slice(&params[6..22]);
+    Some((bd, key, params[22]))
+}
+
+/// User Confirmation Request: [bd][numeric u32]
+pub fn parse_user_confirm_req(params: &[u8]) -> Option<([u8; 6], u32)> {
+    if params.len() < 10 {
+        return None;
+    }
+    let mut bd = [0u8; 6];
+    bd.copy_from_slice(&params[..6]);
+    let num = u32::from_le_bytes([params[6], params[7], params[8], params[9]]);
+    Some((bd, num))
+}
+
+/// SSP Complete: [status][bd]
+pub fn parse_ssp_complete(params: &[u8]) -> Option<(u8, [u8; 6])> {
+    if params.len() < 7 {
+        return None;
+    }
+    let mut bd = [0u8; 6];
+    bd.copy_from_slice(&params[1..7]);
+    Some((params[0], bd))
+}
+
+#[cfg(test)]
+mod pairing_codec_tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn opcodes_conexao_ssp() {
+        assert_eq!(CMD_CREATE_CONNECTION, 0x0405);
+        assert_eq!(CMD_ACCEPT_CONNECTION, 0x0409);
+        assert_eq!(CMD_PIN_REPLY, 0x040D);
+        assert_eq!(CMD_AUTH_REQUESTED, 0x0411);
+        assert_eq!(CMD_SET_CONN_ENCRYPT, 0x0413);
+        assert_eq!(CMD_WRITE_SSP_MODE, 0x0C56);
+        assert_eq!(CMD_IO_CAP_REPLY, 0x042B);
+        assert_eq!(CMD_USER_CONFIRM_REPLY, 0x042C);
+    }
+
+    #[test]
+    fn create_connection_layout() {
+        let c = cmd_create_connection([1; 6]);
+        assert_eq!(c.params.len(), 13);
+        assert_eq!(&c.params[..6], &[1; 6]);
+        assert_eq!(&c.params[6..8], &0xCC18u16.to_le_bytes());
+    }
+
+    #[test]
+    fn pin_reply_layout() {
+        let c = cmd_pin_reply([2; 6], "1234");
+        assert_eq!(&c.params[..6], &[2; 6]);
+        assert_eq!(c.params[6], 4);
+        assert_eq!(&c.params[7..11], b"1234");
+    }
+
+    #[test]
+    fn io_cap_reply_justworks_layout() {
+        let bd = [0xAA; 6];
+        let c = cmd_io_cap_reply(bd, IO_CAP_NO_INPUT_NO_OUTPUT, 0);
+        assert_eq!(&c.params[..6], &bd);
+        assert_eq!(c.params[6], 0x03); // NoInputNoOutput
+        assert_eq!(c.params[7], 0); // sem OOB
+        assert_eq!(c.params[8], 0); // auth mitm off
+    }
+
+    #[test]
+    fn parse_conn_complete_e_request() {
+        // conn complete: status 0, handle 0x20, bd, link 1, enc 0
+        let p = [
+            0x00, 0x20, 0x00, 1, 2, 3, 4, 5, 6, 0x01, 0x00,
+        ];
+        let (st, h, bd) = parse_connection_complete(&p).unwrap();
+        assert_eq!(st, 0);
+        assert_eq!(h, 0x20);
+        assert_eq!(bd, [1, 2, 3, 4, 5, 6]);
+        assert!(parse_connection_complete(&p[..6]).is_none());
+
+        let req = [9, 8, 7, 6, 5, 4, 0, 0, 0, 0x01];
+        assert_eq!(parse_connection_request(&req).unwrap(), [9, 8, 7, 6, 5, 4]);
+    }
+
+    #[test]
+    fn parse_link_key_e_ssp_e_userconfirm() {
+        // link key notif
+        let mut p = vec![9; 6];
+        p.extend_from_slice(&[0xAB; 16]);
+        p.push(0x04); // unauthenticated combination key
+        let (bd, key, ty) = parse_link_key_notif(&p).unwrap();
+        assert_eq!(bd, [9; 6]);
+        assert_eq!(key, [0xAB; 16]);
+        assert_eq!(ty, 0x04);
+
+        // user confirm
+        let bd = [5; 6];
+        let mut uc = bd.to_vec();
+        uc.extend_from_slice(&123456u32.to_le_bytes());
+        let (b2, num) = parse_user_confirm_req(&uc).unwrap();
+        assert_eq!(b2, bd);
+        assert_eq!(num, 123456);
+
+        // ssp complete
+        let ok = [0x00, 1, 2, 3, 4, 5, 6];
+        let (st, bd3) = parse_ssp_complete(&ok).unwrap();
+        assert_eq!(st, 0);
+        assert_eq!(bd3, [1, 2, 3, 4, 5, 6]);
+        // falha
+        let fail = [0x06, 1, 2, 3, 4, 5, 6]; // 6 = auth failure
+        let (st, _) = parse_ssp_complete(&fail).unwrap();
+        assert_eq!(st, 6);
+    }
+}

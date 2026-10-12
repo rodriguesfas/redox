@@ -10,6 +10,7 @@
 
 mod hci;
 mod l2cap;
+mod pairing;
 mod probe;
 mod scheme;
 

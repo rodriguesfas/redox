@@ -21,6 +21,7 @@ use crate::hci::{
     EVT_INQUIRY_RESULT, EVT_INQUIRY_RESULT_RSSI, HciCommand, InquiryResult, parse_event,
     parse_inquiry_result, LAP_GIAC,
 };
+use crate::pairing::Pairing;
 
 pub const ID_ROOT: usize = 1;
 const ID_CTL: usize = 2;
@@ -43,6 +44,7 @@ impl Default for BtShared {
             devices: Vec::new(),
             events: Vec::new(),
             pending_cmds: Vec::new(),
+            pairing: Pairing::new(),
         }
     }
 }
@@ -58,6 +60,8 @@ pub struct BtShared {
     pub devices: Vec<InquiryResult>,
     pub events: Vec<Vec<u8>>,
     pub pending_cmds: Vec<HciCommand>,
+    /// estado do pareamento (SSP/PIN) atual
+    pub pairing: Pairing,
 }
 
 impl BtShared {
@@ -81,6 +85,9 @@ impl BtShared {
             }
             _ => {}
         }
+        // Eventos de pareamento: roteia p/ pairing e coleta comandos de volta
+        let emitted = self.pairing.on_event(code, params);
+        self.pending_cmds.extend(emitted);
         // guarda cru p/ userspace decidir
         self.events.push(pkt.to_vec());
     }
@@ -107,6 +114,24 @@ impl BtShared {
                 self.inquiring = false;
                 HciCommand::new(CMD_RESET)
             }
+            _ if cmd.starts_with("pair ") => {
+                let bd = Pairing::parse_bd_text(cmd[5..].trim())
+                    .ok_or(Error::new(EINVAL))?;
+                if !self.ready {
+                    return Err(Error::new(EAGAIN));
+                }
+                self.pending_cmds.push(self.pairing.start_pair(bd));
+                return Ok(());
+            }
+            _ if cmd.starts_with("pin ") => {
+                // configura PIN legado SEM emitir HCI agora (usado se o par pedir)
+                let pin = cmd[4..].trim();
+                if pin.is_empty() || pin.len() > 16 || !pin.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(Error::new(EINVAL));
+                }
+                self.pairing.set_pin(pin.to_string());
+                return Ok(());
+            }
             _ => return Err(Error::new(EINVAL)),
         };
         self.pending_cmds.push(hci);
@@ -129,12 +154,13 @@ impl BtShared {
         });
         let _ = write!(
             s,
-            "state={} hci={} bd={} inquiring={} devices={}\n",
+            "state={} hci={} bd={} inquiring={} devices={} pair={:?}\n",
             if self.ready { "ready" } else { "probe" },
             self.hci_version,
             bd.as_deref().unwrap_or("--"),
             self.inquiring as u8,
             self.devices.len(),
+            self.pairing.phase(),
         );
         s
     }
@@ -319,6 +345,66 @@ mod tests {
         s.drain_commands().for_each(drop);
         s.handle_hci_event(&[EVT_INQUIRY_COMPLETE, 1, 0]);
         assert!(!s.inquiring);
+    }
+
+    /// E2E no nivel scheme: "pair xx:.." via ctl -> eventos JustWorks ->
+    /// respostas em pending_cmds (como o daemon drenaria) -> Paired.
+    #[test]
+    fn pairing_e2e_via_ctl_e_eventos() {
+        use crate::pairing::PairPhase;
+        let mut s = ready_shared();
+
+        s.ctl_command("pair de:ad:be:ef:00:42").unwrap();
+        let cmd = s.drain_commands().next().unwrap();
+        assert_eq!(cmd.opcode, 0x0405); // Create Connection
+        assert_eq!(&cmd.params[..6], &[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x42]);
+
+        let bd = [0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x42];
+
+        let mut ev = |code: u8, params: &[u8]| {
+            let mut pkt = vec![code, params.len() as u8];
+            pkt.extend_from_slice(params);
+            s.handle_hci_event(&pkt);
+            s.drain_commands().map(|c| c.opcode).collect::<Vec<u16>>()
+        };
+
+        // 1) Connection Complete (handle 0x20)  -> AuthRequested
+        let mut p = vec![0x00];
+        p.extend_from_slice(&0x20u16.to_le_bytes());
+        p.extend_from_slice(&bd);
+        p.extend_from_slice(&[1, 0]);
+        let ops = ev(0x03, &p);
+        assert_eq!(ops, vec![0x0411]);
+
+        // 2) Link Key Req (sem chave) -> NegReply; 3) IO Cap -> Reply;
+        //    4) User Confirm -> Reply
+        assert_eq!(ev(0x17, &bd), vec![0x040C]);
+        assert_eq!(ev(0x31, &bd), vec![0x042B]);
+        let mut uc = bd.to_vec();
+        uc.extend_from_slice(&111222u32.to_le_bytes());
+        assert_eq!(ev(0x33, &uc), vec![0x042C]);
+
+        // 5) SSP Complete ok -> SetConnEncrypt(0x20)
+        let mut ssp = vec![0x00];
+        ssp.extend_from_slice(&bd);
+        assert_eq!(ev(0x36, &ssp), vec![0x0413]);
+
+        // 6) Link Key notif -> sem comando, mas guarda chave
+        let mut kn = bd.to_vec();
+        kn.extend_from_slice(&[0x5A; 16]);
+        kn.push(4);
+        assert!(ev(0x18, &kn).is_empty());
+
+        // 7) Encryption Change ok -> Paired
+        assert!(ev(0x08, &[0x00, 0x20, 0x00]).is_empty());
+
+        // pin e re-uso: proxima conexao usa a link key guardada
+        let ops = ev(0x17, &bd);
+        assert_eq!(ops, vec![0x040B]); // LinkKey REPLY com a chave
+        drop(ev); // encerra o borrow mutavel
+        assert_eq!(s.pairing.phase(), PairPhase::Paired);
+
+        assert!(s.status_line().contains("pair=Paired"));
     }
 
     #[test]
