@@ -204,3 +204,17 @@ pub const REG_FW_CTRL: usize = 0x5010;
 pub const REG_FW_STATUS: usize = 0x5011;
 pub const FW_CTRL_START: u32 = 0x0000_0001;
 pub const FW_STATUS_BUSY: u32 = 0x0000_0001;
+
+// ==== RX/TX descriptor rings (device MMIO contract) ====
+pub const RING_LEN: u32 = 32;
+pub const RING_DESC_WORDS: usize = 4;
+pub const REG_TXQ_RING: usize = 0x2800;
+pub const REG_RXQ_RING: usize = 0x2880;
+pub const REG_TXQ_HEAD: usize = 0x2A00;
+pub const REG_TXQ_TAIL: usize = 0x2A01;
+pub const REG_RXQ_HEAD: usize = 0x2A02;
+pub const REG_RXQ_TAIL: usize = 0x2A03;
+pub const TX_DATA_WINDOW: usize = 0x4000;
+pub const RX_DATA_WINDOW: usize = 0x8000;
+pub const FRAME_SLOT_BYTES: usize = 2048;
+pub const FRAME_SLOT_WORDS: usize = FRAME_SLOT_BYTES / 4;
