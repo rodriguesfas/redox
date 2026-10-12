@@ -162,6 +162,31 @@ impl Mt7921Device {
     }
 
     /// Check if associated
+    /// Controle: inicia scan (beacons chegam pela RX ring; Link em net80211).
+    pub fn start_scan(&mut self) -> Result<(), &'static str> {
+        self.mac.start_scan()
+    }
+
+    /// Controle: encerra scan; retorna quantidade de BSS descobertos.
+    pub fn finish_scan(&mut self) -> Result<usize, &'static str> {
+        self.mac.finish_scan()
+    }
+
+    /// BSS descobertos na ultima rodada de scan.
+    pub fn scan_results(&self) -> &[net80211::link::Bss] {
+        self.mac.link().scan_results()
+    }
+
+    /// Estado da camada de link (Disconnected/Scanning/Associating/Associated).
+    pub fn link_state(&self) -> net80211::link::LinkState {
+        self.mac.link().state()
+    }
+
+    /// Inicia associacao com um BSS do scan.
+    pub fn associate_bss(&mut self, bssid: [u8; 6], essid: &[u8]) -> Result<(), &'static str> {
+        self.mac.associate(bssid, essid)
+    }
+
     pub fn is_associated(&self) -> bool {
         self.mac.is_associated()
     }

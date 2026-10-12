@@ -10,12 +10,12 @@ pub struct Firmware {
 
 impl Firmware {
     pub fn load(path: &str) -> Result<Arc<Self>, &'static str> {
-        // In a real implementation, this would read from the filesystem
-        // For now, we'll simulate loading
         log::info!("Loading firmware from: {}", path);
-        
-        // Simulate firmware data
-        let data = Vec::new();
+
+        // Mock determinístico nao-vazio (upload aceita; blob real via disco vem depois).
+        let mut data = Vec::with_capacity(64);
+        data.extend_from_slice(b"MT7921FW\0");
+        data.extend_from_slice(&[0xA5; 56]);
         let version = String::from("2024.01.15");
         
         Ok(Arc::new(Self { data, version }))
