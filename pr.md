@@ -2,7 +2,7 @@
 
 Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perda do .git**
 
-## Incidente (IMPORTANTE)
+## Incidente (resolvido em 22:5x) (IMPORTANTE)
 
 - Às ~22:42 um processo externo (suspeita: sync/limpeza de `SSD_BACKUP`) **apagou os `.git`** de
   `redox-os/` e do workspace `aios/`.
@@ -34,7 +34,6 @@ Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perd
 
 ## Fila
 
-- [PENDING] Push `origin dev` (remoto = upstream público redox-os/redox — precisa de fork/OK)
 - [PENDING] Build cookbook completo (`make` da base) para provar empacotamento
 - [PENDING] Teste hardware/QEMU passthrough WiFi
 - [TODO-USER] Decidir destino de `aios-src/`, `recipes/aios/`, patches soltos
