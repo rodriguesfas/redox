@@ -34,6 +34,13 @@ Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perd
 
 ## Fila
 
+## 2026-10-12 (1,2,4 resolvidos; 3 em andamento)
+
+- [DONE] 1 PR: https://github.com/rodriguesfas/redox/pull/1 (GraphQL bloqueado; REST OK). Upstream redox-os/redox requer GitLab MR — pendente de decisão.
+- [DONE] 2 Wiper `.git`: evidência = árvore veio de backup que exclui `.git` em TODOS os recipes (restore 22:42). Nada ativo. Mitigação: push fork + bare local em SSD_BACKUP/git-backups/redox.git.
+- [DONE] 4 Itens soltos do usuário commitados em dev (base pin+patch, relibc patch, intel-ucode, linux-firmware, aios-src, recipes/aios) e enviados ao fork+backup.
+- [DONE] 3 r.base: `cook base - successful`, base.pkgar 49MB com 4 *_net em usr/lib/drivers + wpa_supplicant em usr/bin + pcid.d/*.toml. Fixes no caminho: .git mínimos+remotes+fetch revs (21 sources), member net/wpa_supplicant, import crypto::kdf, tipo &str do password.
+
 - [PENDING] Build cookbook completo (`make` da base) para provar empacotamento
 - [PENDING] Teste hardware/QEMU passthrough WiFi
 - [TODO-USER] Decidir destino de `aios-src/`, `recipes/aios/`, patches soltos
