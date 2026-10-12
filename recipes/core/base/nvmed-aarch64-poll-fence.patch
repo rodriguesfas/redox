@@ -1,0 +1,255 @@
+diff --git a/drivers/executor/src/lib.rs b/drivers/executor/src/lib.rs
+index 88c112e1..ab6b5fe9 100644
+--- a/drivers/executor/src/lib.rs
++++ b/drivers/executor/src/lib.rs
+@@ -17,6 +17,7 @@ use std::rc::Rc;
+ use std::task::{Context, Poll, RawWakerVTable};
+ 
+ use event::{EventFlags, RawEventQueue};
++
+ use intrusive_collections::{LinkedList, LinkedListLink, UnsafeRef, intrusive_adapter};
+ pub use task::vtable;
+ use task::*;
+@@ -167,6 +168,36 @@ pub struct LocalExecutor<Hw: Hardware> {
+ 
+     ready_queue: RefCell<LinkedList<ReadyAdapter>>,
+     is_polling: Cell<bool>,
++    poll_mode: Cell<bool>,
++    /// Periodic timer (`/scheme/time`) used only in poll mode, see [`Self::set_poll_mode`].
++    poll_timer: RefCell<Option<File>>,
++}
++
++/// `user_data` reserved for the poll-mode timer (0 is the IRQ, 1.. are external events).
++const POLL_TIMER_USER_DATA: usize = usize::MAX;
++/// Poll-mode timer period. Bounds the latency of a lost wakeup while idle.
++const POLL_TIMER_PERIOD_NS: i64 = 10_000_000;
++/// `CLOCK_MONOTONIC` as used by the Redox `time` scheme.
++const CLOCK_MONOTONIC: usize = 4;
++
++/// Arm a `/scheme/time` fd to fire `period_ns` from now. The fd becomes readable when it expires.
++fn arm_time_fd(time_fd: &mut File, period_ns: i64) -> std::io::Result<()> {
++    // Layout of `syscall::TimeSpec { tv_sec: i64, tv_nsec: i32 }` (repr(C), 16 bytes).
++    let mut buf = [0u8; 16];
++    let n = time_fd.read(&mut buf)?;
++    if n < buf.len() {
++        return Err(std::io::Error::new(
++            std::io::ErrorKind::InvalidData,
++            "time read too small",
++        ));
++    }
++    let mut sec = i64::from_ne_bytes(buf[0..8].try_into().unwrap());
++    let mut nsec = i64::from(i32::from_ne_bytes(buf[8..12].try_into().unwrap())) + period_ns;
++    sec += nsec / 1_000_000_000;
++    nsec %= 1_000_000_000;
++    buf[0..8].copy_from_slice(&sec.to_ne_bytes());
++    buf[8..12].copy_from_slice(&(nsec as i32).to_ne_bytes());
++    time_fd.write_all(&buf)
+ }
+ 
+ impl<Hw: Hardware> LocalExecutor<Hw> {
+@@ -197,6 +228,85 @@ impl<Hw: Hardware> LocalExecutor<Hw> {
+         Hw::current()
+     }
+ 
++    /// Enable poll mode for hardware whose interrupt is never delivered (e.g. NVMe legacy INTx
++    /// on aarch64 QEMU `virt`). Completions are polled while a command is in flight, and a
++    /// periodic timer bounds the wait for external events so a missed wakeup cannot hang the
++    /// driver.
++    pub fn set_poll_mode(&self, enabled: bool) {
++        self.poll_mode.set(enabled);
++
++        let mut timer = self.poll_timer.borrow_mut();
++        if enabled && timer.is_none() {
++            let mut time_fd = File::options()
++                .read(true)
++                .write(true)
++                .open(format!("/scheme/time/{CLOCK_MONOTONIC}"))
++                .expect("executor: failed to open time fd for poll mode");
++            self.queue
++                .subscribe(
++                    time_fd.as_raw_fd() as usize,
++                    POLL_TIMER_USER_DATA,
++                    EventFlags::READ,
++                )
++                .expect("executor: failed to subscribe to poll timer");
++            arm_time_fd(&mut time_fd, POLL_TIMER_PERIOD_NS)
++                .expect("executor: failed to arm poll timer");
++            *timer = Some(time_fd);
++        } else if !enabled && let Some(time_fd) = timer.take() {
++            let _ = self.queue.unsubscribe(time_fd.as_raw_fd() as usize);
++        }
++    }
++
++    /// Poll-mode timer fired: re-arm it and give every external-event waiter a spurious
++    /// wakeup so it re-checks its (nonblocking) fd. Safe because all waiters tolerate spurious
++    /// events, and it guarantees progress even if the kernel wakeup was missed.
++    fn on_poll_timer(&self) {
++        if let Some(time_fd) = self.poll_timer.borrow_mut().as_mut()
++            && let Err(err) = arm_time_fd(time_fd, POLL_TIMER_PERIOD_NS)
++        {
++            log::error!("executor: failed to re-arm poll timer: {err}");
++        }
++
++        // Snapshot the keys instead of draining the map. `flags_ptr` points into the
++        // caller's `ExternalEventHandle`, and that entry must stay in the map so that
++        // `Drop for ExternalEventHandle` can still find and remove it. Draining here
++        // turned Drop's `remove` into a no-op, so the entry was gone while the handle
++        // was still alive and the task still held a pointer into it; once the handle
++        // was freed the queued task wrote to recycled memory. That corrupted
++        // unrelated processes: `cat` and `virtio-netd` died with a guard-page fault
++        // in roughly 4 of 6 identical invocations, with no disk I/O involved.
++        //
++        // `enqueue` dedupes on `ready_link`, so re-notifying an already-queued task is
++        // a no-op, and re-arming every 10ms is harmless.
++        let user_datas: Vec<_> = self.external_event.borrow().keys().copied().collect();
++        for user_data in user_datas {
++            let waiter = self
++                .external_event
++                .borrow()
++                .get(&user_data)
++                .map(|(task, flags_ptr)| (task.clone(), *flags_ptr));
++
++            if let Some((task, flags_ptr)) = waiter {
++                // SAFETY: the entry is still in the map, which means the owning handle
++                // has not been dropped, so `flags_ptr` is still valid. It is read out
++                // of a single `borrow()` and written to afterwards, so the borrow must
++                // be released first (it is, by the `let` above).
++                unsafe { flags_ptr.as_ptr().write(EventFlags::READ) };
++                enqueue::<Hw>(task);
++            }
++        }
++
++        self.poll_cqes();
++    }
++
++    /// True if any submitted command is still waiting for its completion entry.
++    pub fn has_outstanding_commands(&self) -> bool {
++        self.awaiting_completion
++            .borrow()
++            .values()
++            .any(|per_cmd| !per_cmd.is_empty())
++    }
++
+     pub fn poll(&self) -> usize {
+         assert!(!self.is_polling.replace(true));
+ 
+@@ -270,18 +380,28 @@ impl<Hw: Hardware> LocalExecutor<Hw> {
+         enqueue::<Hw>(task);
+ 
+         loop {
+-            let finished = self.poll();
++                let finished = self.poll();
+             if retval.borrow().is_some() {
+                 break;
+             }
+ 
+             if finished == 0 && self.ready_queue.borrow().is_empty() {
+-                if self.poll_cqes() != 0 {
++                        if self.poll_cqes() != 0 {
+                     continue;
+                 }
+ 
+-                self.react();
+-            }
++                // Poll mode (IRQ not delivered): only spin-sleep while a command is actually
++                // in flight. When idle, block in `react()` like the IRQ path does, otherwise
++                // the driver busy-loops and starves every other context on a single CPU.
++                                if self.poll_mode.get() && self.has_outstanding_commands() {
++                                            // `std::thread::sleep` with sub-millisecond durations hangs permanently on
++                    // this Redox build. Yield instead: the CQ is polled every iteration, no timer.
++                    std::thread::yield_now();
++                                continue;
++                }
++
++                        self.react();
++                    }
+         }
+ 
+         let o = retval.borrow_mut().take().unwrap();
+@@ -290,6 +410,11 @@ impl<Hw: Hardware> LocalExecutor<Hw> {
+     fn react(&self) {
+         let event = self.queue.next_event().expect("failed to get next event");
+ 
++        if event.user_data == POLL_TIMER_USER_DATA {
++                self.on_poll_timer();
++            return;
++        }
++
+         if event.user_data != 0 {
+             let Some((task, flags_ptr)) = self.external_event.borrow_mut().remove(&event.user_data)
+             else {
+@@ -606,6 +731,8 @@ pub fn init_raw<Hw: Hardware>(
+         external_event: RefCell::new(HashMap::new()),
+         next_user_data: Cell::new(1),
+         is_polling: Cell::new(false),
++        poll_mode: Cell::new(false),
++        poll_timer: RefCell::new(None),
+         ready_queue: RefCell::new(LinkedList::new(ReadyAdapter::new())),
+     }
+ }
+diff --git a/drivers/storage/nvmed/src/nvme/executor.rs b/drivers/storage/nvmed/src/nvme/executor.rs
+index 623e9aaa..632e7793 100644
+--- a/drivers/storage/nvmed/src/nvme/executor.rs
++++ b/drivers/storage/nvmed/src/nvme/executor.rs
+@@ -81,6 +81,7 @@ pub type NvmeExecutor = LocalExecutor<NvmeHw>;
+ 
+ pub fn init(nvme: Arc<Nvme>, iv: u16, intx: bool, irq_handle: File) -> Rc<LocalExecutor<NvmeHw>> {
+     let this = Rc::new(executor::init_raw(nvme, iv, intx, irq_handle));
++    this.set_poll_mode(true);
+     THE_EXECUTOR.with(|exec| *exec.borrow_mut() = Some(Rc::clone(&this)));
+     this
+ }
+diff --git a/drivers/storage/nvmed/src/nvme/queues.rs b/drivers/storage/nvmed/src/nvme/queues.rs
+index ffe2f843..8a52480b 100644
+--- a/drivers/storage/nvmed/src/nvme/queues.rs
++++ b/drivers/storage/nvmed/src/nvme/queues.rs
+@@ -1,10 +1,12 @@
+ use std::cell::UnsafeCell;
+ use std::ptr;
++use std::sync::atomic::{Ordering, fence};
+ 
+ use common::dma::Dma;
+ use common::io::{Io, Mmio};
+ use syscall::Result;
+ 
++
+ /// A submission queue entry.
+ #[derive(Clone, Copy, Debug, Default)]
+ #[repr(C, packed)]
+@@ -73,6 +75,7 @@ impl NvmeCompQueue {
+     /// Get a new completion queue entry, or return None if no entry is available yet.
+     pub(crate) fn complete(&mut self) -> Option<NvmeComp> {
+         let entry = unsafe { ptr::read_volatile(self.data[usize::from(self.head)].get()) };
++        fence(Ordering::Acquire);
+ 
+         if ((entry.status & 1) == 1) == self.phase {
+             self.head = (self.head + 1) % (self.data.len() as u16);
+@@ -99,6 +102,7 @@ impl NvmeCompQueue {
+ 
+     pub fn kick(&mut self) {
+         if self.last_doorbell != self.head {
++            fence(Ordering::Release);
+             self.doorbell.write(u32::from(self.head));
+             self.last_doorbell = self.head;
+         }
+@@ -129,7 +133,11 @@ impl NvmeCmdQueue {
+         self.head == self.tail
+     }
+     pub fn is_full(&self) -> bool {
+-        self.head == self.tail + 1
++        // Circular buffer of `len` slots: full when advancing tail would land on head.
++        // The previous `head == tail + 1` missed the wrap (tail == len-1, head == 0),
++        // which let `submit_unchecked` overwrite an entry the controller had not
++        // consumed yet, silently losing the command.
++        self.head == ((self.tail + 1) & (self.data.len() as u16 - 1))
+     }
+ 
+     /// Add a new submission command entry to the queue. The caller must ensure that the queue have free
+@@ -141,6 +149,7 @@ impl NvmeCmdQueue {
+     }
+ 
+     pub fn kick(&mut self) {
++        fence(Ordering::Release);
+         self.doorbell.write(u32::from(self.tail));
+     }
+ }
