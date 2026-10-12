@@ -9,6 +9,8 @@ license = "MIT"
 libredox.workspace = true
 redox_event.workspace = true
 redox_syscall = { workspace = true, features = ["std"] }
+redox-scheme = "0.11"
+scheme-utils = { path = "../../../scheme-utils" }
 log.workspace = true
 
 daemon = { path = "../../../daemon" }
