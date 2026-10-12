@@ -121,4 +121,40 @@ mod tests {
         assert!(tk.len() > 0);
         assert!(mic.len() > 0);
     }
+    #[test]
+    fn test_psk_para_ptk_e_ccmp_roundtrip() {
+        // Pipeline completo do handshake (lado estacao, sem AP real):
+        // scan/assoc acontecem no driver; aqui cobrimos senha -> PMK ->
+        // PTK (KCK/KEK/TK) -> frame de dados cifrado com CCMP.
+        use net80211::crypto::Ccmp;
+
+        let mut sup = WpaSupplicant::new();
+        sup.set_network("CafeWifi", "senha123").unwrap();
+        let pmk = sup.derive_psk().unwrap();
+        assert_ne!(pmk, [0u8; 32]);
+
+        // Nonces deterministicos (no mundo real: ANonce vem da M1 do AP)
+        let anonce = [7u8; 32];
+        let sta = [0x02, 0x00, 0x5e, 0x10, 0x20, 0x30];
+        let ap = [0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01];
+        let snonce = [3u8; 32];
+
+        let (kck, kek, tk, _mic) = sup
+            .four_way_handshake(&pmk, &snonce, &ap, &sta)
+            .expect("handshake ok");
+        // PMK nao pode vazar nas chaves derivadas
+        assert_ne!(tk, pmk[..16]);
+        assert_ne!(kck, kek);
+        let _ = anonce; // (layout interno: ver kdf::prf_512)
+
+        // TK alimenta o CCMP: dados de rede cifrados apos o handshake
+        let mut ccmp = Ccmp::new(&tk);
+        let pn = [9u8; 6];
+        let aad = b"aad-do-frame";
+        let dados = b"GET / HTTP/1.1 via WiFi";
+        let ct = ccmp.encrypt(&pn, 0, 0, &sta, dados, aad).unwrap();
+        assert_eq!(ct.len(), dados.len() + 8);
+        let back = ccmp.decrypt(&pn, 0, &sta, &ct, aad).unwrap();
+        assert_eq!(back, dados);
+    }
 }
