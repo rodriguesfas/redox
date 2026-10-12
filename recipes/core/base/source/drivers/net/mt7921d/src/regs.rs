@@ -152,3 +152,7 @@ pub const TX_DATA_WINDOW: usize = 0x8000;
 pub const RX_DATA_WINDOW: usize = 0xC000;
 pub const FRAME_SLOT_BYTES: usize = 2048;
 pub const FRAME_SLOT_WORDS: usize = FRAME_SLOT_BYTES / 4;
+
+// ==== Scan control ====
+/// Escrever 1 inicia uma rodada de scan; resultados chegam como beacons na RX ring.
+pub const REG_SCAN_CTRL: usize = 0x7104;
