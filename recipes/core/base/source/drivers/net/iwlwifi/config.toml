@@ -1,0 +1,19 @@
+[[drivers]]
+name = "Intel WiFi (iwlwifi)"
+class = 0x02
+subclass = 0x80
+ids = {
+    0x8086 = [
+        0x2723,  # AX210 160MHz (WiFi 6E)
+        0x2725,  # AX210 160MHz (WiFi 6E) vPro
+        0x7af0,  # AX200 160MHz (WiFi 6)
+        0x7af1,  # AX200 160MHz (WiFi 6) vPro
+        0x7df0,  # AX201 160MHz (WiFi 6) Integrated
+        0x7df1,  # AX201 160MHz (WiFi 6) Integrated vPro
+        0x2720,  # AX211 160MHz (WiFi 6E) Integrated
+        0x2721,  # AX211 160MHz (WiFi 6E) Integrated vPro
+        0x54f0,  # BE200 (WiFi 7)
+        0x54f1,  # BE200 (WiFi 7) vPro
+    ]
+}
+command = ["iwlwifi"]

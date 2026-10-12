@@ -1,0 +1,32 @@
+[package]
+name = "iwlwifi"
+description = "Intel WiFi driver (iwlwifi) for Redox OS"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bitflags.workspace = true
+futures = "0.3"
+libredox.workspace = true
+libc.workspace = true
+log.workspace = true
+parking_lot.workspace = true
+redox_event.workspace = true
+redox-scheme = "0.11"
+redox_syscall = { workspace = true, features = ["std"] }
+smallvec.workspace = true
+scheme-utils = { path = "../../../scheme-utils" }
+
+executor = { path = "../../executor" }
+common = { path = "../../common" }
+daemon = { path = "../../../daemon" }
+driver-network = { path = "../driver-network" }
+pcid = { path = "../../pcid" }
+net80211 = { path = "../net80211" }
+zstd = "0.13"
+
+[features]
+default = []
+
+[lints]
+workspace = true
