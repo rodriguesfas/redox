@@ -1,0 +1,12 @@
+[package]
+name = "aios-core"
+version = "0.1.0"
+description = "AIOS core library: GGUF parsing, checksums, model registry, cache"
+license = "MIT OR Apache-2.0"
+dependencies = []
+
+[source]
+path = "/home/fasr/SSD_BACKUP/Workspace/aios/ai-core"
+
+[build]
+template = "cargo"

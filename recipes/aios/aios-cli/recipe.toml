@@ -1,0 +1,15 @@
+[package]
+name = "aios-cli"
+version = "0.1.0"
+description = "AIOS AI CLI: model management, inference, tasks"
+license = "MIT OR Apache-2.0"
+dependencies = ["aios-core", "aios-inference", "edge-sdk"]
+
+[source]
+path = "/home/fasr/SSD_BACKUP/Workspace/aios/cli/ai"
+
+[build]
+template = "cargo"
+
+[install]
+binaries = ["ai"]

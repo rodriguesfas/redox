@@ -1,0 +1,41 @@
+# AIOS workspace recipe (overlay; lives in THIS repo, not upstream).
+#
+# Why one recipe for the whole workspace instead of one per crate: the crates
+# depend on each other through workspace-level path deps (e.g. `cli/ai` needs
+# `../../ai-core`), and the cookbook copies `[source].path` into an isolated
+# per-recipe `source/` dir. A per-crate recipe would copy one crate alone and
+# its path deps would point nowhere. So the source here is a filtered copy of
+# the AIOS workspace (see platform/scripts/sync-aios-src.sh), and every binary
+# is built from it with per-package manifest paths.
+#
+# `path = "aios-src"` is resolved against the CWD of the `repo` tool, which is
+# the redox-os/ checkout root (the repo entrypoint builds the recipe index from
+# `current_dir().join("recipes")`, and fetch copies `Path::new(path)` with no
+# chdir). Running `repo` from anywhere else breaks this and every other
+# local-path recipe. The tree itself is produced by
+# platform/scripts/sync-aios-src.sh on every platform build.
+[package]
+name = "aios"
+version = "0.1.0"
+description = "AIOS workspace: ai CLI, edge daemon/CLI, dev, deploy and security tools"
+license = "MIT OR Apache-2.0"
+dependencies = []
+
+[source]
+path = "aios-src"
+
+[build]
+template = "custom"
+script = """
+DYNAMIC_INIT
+# cargo build via the cookbook redoxer picks the right target/linker per arch;
+# the workspace .cargo/config.toml (x86_64-only linker) is excluded by the sync
+# script on purpose. Each member with binaries is built by its manifest path;
+# the shared workspace resolution keeps the path deps between crates intact.
+COOKBOOK_CARGO_PATH="cli/ai"     bin_name="ai"            bin_final_name="ai"            cookbook_cargo_build
+COOKBOOK_CARGO_PATH="cli/dev"    bin_name="aios-dev"      bin_final_name="aios-dev"      cookbook_cargo_build
+COOKBOOK_CARGO_PATH="edge-ai"    bin_name="edge-ai"       bin_final_name="edge-ai"       cookbook_cargo_build
+COOKBOOK_CARGO_PATH="edge-ai"    bin_name="edge"          bin_final_name="edge"          cookbook_cargo_build
+COOKBOOK_CARGO_PATH="deploy"     bin_name="aios-deploy"   bin_final_name="aios-deploy"   cookbook_cargo_build
+COOKBOOK_CARGO_PATH="security"   bin_name="aios-security" bin_final_name="aios-security" cookbook_cargo_build
+"""

@@ -1,0 +1,15 @@
+[package]
+name = "aios-security"
+version = "0.1.0"
+description = "AIOS Security: AI model permissions, contain profiles, policy engine"
+license = "MIT OR Apache-2.0"
+dependencies = ["aios-core"]
+
+[source]
+path = "/home/fasr/SSD_BACKUP/Workspace/aios/security"
+
+[build]
+template = "cargo"
+
+[install]
+binaries = ["aios-security"]

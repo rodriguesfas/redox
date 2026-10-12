@@ -1,0 +1,20 @@
+[package]
+name = "aios-bin"
+version = "0.1.0"
+description = "AIOS pre-built binaries for x86_64-unknown-redox"
+license = "MIT OR Apache-2.0"
+dependencies = []
+
+[source]
+url = "file:///home/fasr/SSD_BACKUP/Workspace/aios/prebuilt-redox.tar.gz"
+
+[build]
+type = "script"
+script = """
+# Extract pre-built binaries
+mkdir -p "${PREFIX}/bin"
+tar -xzf "${SOURCE}" -C "${PREFIX}/bin" --strip-components=0
+"""
+
+[install]
+binaries = ["ai", "edge-ai", "edge", "aios-deploy", "aios-security"]

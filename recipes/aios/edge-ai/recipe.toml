@@ -1,0 +1,15 @@
+[package]
+name = "edge-ai"
+version = "0.1.0"
+description = "AIOS Edge AI OS: daemon, HTTP API, CLI, control panel"
+license = "MIT OR Apache-2.0"
+dependencies = ["aios-core", "aios-inference", "edge-sdk"]
+
+[source]
+path = "/home/fasr/SSD_BACKUP/Workspace/aios/edge-ai"
+
+[build]
+template = "cargo"
+
+[install]
+binaries = ["edge-ai", "edge"]

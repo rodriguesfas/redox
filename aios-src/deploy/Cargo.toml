@@ -1,0 +1,26 @@
+[package]
+name = "aios-deploy"
+version = "0.1.0"
+edition = "2021"
+description = "AIOS Edge Deployment - device registry and model deployment protocol"
+license = "MIT"
+
+[dependencies]
+aios-core = { path = "../ai-core" }
+aios-sdk = { path = "../edge-sdk" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "macros", "fs", "io-util", "time", "sync"] }
+# default-features = false _without_ a TLS backend on purpose: the client only
+# ever talks plain HTTP to devices on the local LAN, and native-tls/openssl
+# does not cross-compile to the Redox target (no openssl in the sysroot).
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "multipart"] }
+anyhow = "1.0"
+thiserror = "1.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+clap = { version = "4.0", features = ["derive"] }
+toml = "0.8"
+dirs = "5.0"
+
+[dev-dependencies]
+tempfile = "3.0"

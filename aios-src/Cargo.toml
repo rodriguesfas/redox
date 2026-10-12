@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["ai-core", "ai-inference", "edge-sdk", "edge-ai", "cli/ai", "cli/dev", "deploy", "security"]
+exclude = ["redox-os"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+opt-level = 2
+strip = true

@@ -1,0 +1,12 @@
+[package]
+name = "edge-sdk"
+version = "0.1.0"
+description = "AIOS Edge SDK: model loading and inference API"
+license = "MIT OR Apache-2.0"
+dependencies = ["aios-core", "aios-inference"]
+
+[source]
+path = "/home/fasr/SSD_BACKUP/Workspace/aios/edge-sdk"
+
+[build]
+template = "cargo"

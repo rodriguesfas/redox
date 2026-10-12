@@ -1,0 +1,18 @@
+[package]
+name = "aios-inference"
+version.workspace = true
+edition.workspace = true
+description = "AIOS inference backends (ADR-003). Backends: Candle CPU, Candle CUDA."
+license = "MIT"
+
+[features]
+default = ["cpu"]
+cpu = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
+cuda = ["candle-core/cuda", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
+
+[dependencies]
+aios-core = { path = "../ai-core" }
+candle-core = { version = "0.9", default-features = false, optional = true, features = [] }
+candle-nn = { version = "0.9", optional = true }
+candle-transformers = { version = "0.9", optional = true }
+tokenizers = { version = "0.21", optional = true }

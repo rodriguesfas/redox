@@ -1,0 +1,16 @@
+[package]
+name = "aios-cli"
+description = "AIOS 'ai' CLI: list/info/inspect/verify models, doctor"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "ai"
+path = "src/main.rs"
+
+[dependencies]
+aios-core = { path = "../../ai-core" }
+aios-inference = { path = "../../ai-inference" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

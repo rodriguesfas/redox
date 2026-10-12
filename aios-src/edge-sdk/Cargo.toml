@@ -1,0 +1,10 @@
+[package]
+name = "aios-sdk"
+description = "AIOS edge SDK: same API as aios-core for edge apps (placeholder)"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+aios-core = { path = "../ai-core" }
+aios-inference = { path = "../ai-inference" }

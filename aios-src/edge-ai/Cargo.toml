@@ -1,0 +1,26 @@
+[package]
+name = "edge-ai"
+description = "AIOS Edge AI OS (Fase 5): daemon HTTP local + API JSON + edge CLI + ai-monitor"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "edge_ai"
+path = "src/lib.rs"
+
+[[bin]]
+name = "edge-ai"
+path = "src/bin/edge-ai.rs"
+
+[[bin]]
+name = "edge"
+path = "src/bin/edge.rs"
+
+[dependencies]
+aios-core = { path = "../ai-core" }
+aios-inference = { path = "../ai-inference" }
+aios-deploy = { path = "../deploy" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }

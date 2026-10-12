@@ -1,0 +1,26 @@
+[package]
+name = "aios-dev"
+version = "0.1.0"
+edition = "2021"
+description = "AIOS dev CLI - project scaffolding and environment checks"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "aios_dev"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aios-dev"
+path = "src/main.rs"
+
+[dependencies]
+aios-core = { path = "../../ai-core" }
+aios-sdk = { path = "../../edge-sdk" }
+aios-deploy = { path = "../../deploy" }
+aios-security = { path = "../../security" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3.0"

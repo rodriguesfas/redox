@@ -1,0 +1,15 @@
+[package]
+name = "aios-deploy"
+version = "0.1.0"
+description = "AIOS Deployment: device registry, model transfer protocol, validation"
+license = "MIT OR Apache-2.0"
+dependencies = ["aios-core"]
+
+[source]
+path = "/home/fasr/SSD_BACKUP/Workspace/aios/deploy"
+
+[build]
+template = "cargo"
+
+[install]
+binaries = ["aios-deploy"]

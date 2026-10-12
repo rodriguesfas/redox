@@ -1,0 +1,12 @@
+[package]
+name = "aios-inference"
+version = "0.1.0"
+description = "AIOS inference engine with Candle CPU backend"
+license = "MIT OR Apache-2.0"
+dependencies = ["aios-core"]
+
+[source]
+path = "/home/fasr/SSD_BACKUP/Workspace/aios/ai-inference"
+
+[build]
+template = "cargo"
