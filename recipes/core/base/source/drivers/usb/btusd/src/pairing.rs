@@ -58,6 +58,11 @@ impl Pairing {
         self.phase == PairPhase::Paired && self.current == Some(bd)
     }
 
+    /// Connection handle do link atual (pos Connection Complete).
+    pub fn connection_handle(&self) -> Option<u16> {
+        self.handle
+    }
+
     pub fn link_key(&self, bd: &[u8; 6]) -> Option<[u8; 16]> {
         self.link_keys
             .iter()

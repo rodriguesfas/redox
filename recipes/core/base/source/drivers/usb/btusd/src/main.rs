@@ -16,7 +16,7 @@ mod scheme;
 
 extern crate alloc;
 
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::os::fd::AsRawFd;
 use std::process::ExitCode;
 
@@ -76,7 +76,7 @@ fn attach_and_probe(
     scheme: &str,
     port: xhcid_interface::PortId,
     _if_num: u8,
-) -> Result<(XhciClientHandle, std::fs::File, probe::ProbeReport, u16), &'static str> {
+) -> Result<(XhciClientHandle, std::fs::File, std::fs::File, std::fs::File, probe::ProbeReport, u16), &'static str> {
     let handle = XhciClientHandle::new(scheme.to_owned(), port)
         .map_err(|_| "falha ao abrir handle xHCI")?;
 
@@ -111,6 +111,13 @@ fn attach_and_probe(
     let mut event_ep = handle
         .open_endpoint_data(1)
         .map_err(|_| "falha ao abrir endpoint de eventos BT")?;
+    // ACL data: bulk IN/OUT (EP2 em ambos, padrao btusb)
+    let acl_in_ep = handle
+        .open_endpoint_data(2)
+        .map_err(|_| "falha ao abrir bulk IN BT")?;
+    let acl_out_ep = handle
+        .open_endpoint_data(2)
+        .map_err(|_| "falha ao abrir bulk OUT BT")?;
 
     let mut probe = Probe::new();
     loop {
@@ -128,7 +135,7 @@ fn attach_and_probe(
                 report.version.manufacturer,
                 report.bd_addr,
             );
-            return Ok((handle, event_ep, report, interface_num as u16));
+            return Ok((handle, event_ep, acl_in_ep, acl_out_ep, report, interface_num as u16));
         } else if probe.failed() {
             return Err("probe HCI falhou");
         }
@@ -136,7 +143,8 @@ fn attach_and_probe(
 }
 
 fn run(scheme: &str, port: xhcid_interface::PortId, if_num: u8) -> Result<(), &'static str> {
-    let (handle, mut event_ep, report, iface) = attach_and_probe(scheme, port, if_num)?;
+    let (handle, mut event_ep, mut acl_in_ep, mut acl_out_ep, report, iface) =
+        attach_and_probe(scheme, port, if_num)?;
 
     let shared = BtShared {
         ready: true,
@@ -155,6 +163,7 @@ fn run(scheme: &str, port: xhcid_interface::PortId, if_num: u8) -> Result<(), &'
         enum Source {
             Scheme,
             EventEp,
+            BulkIn,
         }
     }
 
@@ -165,6 +174,9 @@ fn run(scheme: &str, port: xhcid_interface::PortId, if_num: u8) -> Result<(), &'
     queue
         .subscribe(event_ep.as_raw_fd() as usize, Source::EventEp, event::EventFlags::READ)
         .map_err(|_| "btusd: subscribe event ep")?;
+    queue
+        .subscribe(acl_in_ep.as_raw_fd() as usize, Source::BulkIn, event::EventFlags::READ)
+        .map_err(|_| "btusd: subscribe bulk in")?;
 
     log::info!("btusd online: scheme BT:// pronto");
     loop {
@@ -175,10 +187,32 @@ fn run(scheme: &str, port: xhcid_interface::PortId, if_num: u8) -> Result<(), &'
                     handler
                         .read_and_process_requests(&mut bt)
                         .map_err(|_| "btusd: erro no scheme")?;
-                    // drena comandos vindos do ctl
+                    // drena comandos vindos do ctl (HCI EP0)
                     let cmds: Vec<_> = bt.shared.drain_commands().collect();
                     for cmd in cmds {
                         send_hci(&handle, &cmd, iface)?;
+                    }
+                    // drena pacotes ACL (canais L2CAP) p/ bulk OUT
+                    let mut acl_out = Vec::new();
+                    {
+                        let handle_opt = bt.shared.pairing_handle;
+                        if let Some(h) = handle_opt {
+                            for (dcid, payload) in bt.shared.drain_acl_out() {
+                                acl_out.push(l2cap::AclPacket::new(h, 2, 0, {
+                                    let mut f = Vec::with_capacity(4 + payload.len());
+                                    f.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+                                    f.extend_from_slice(&dcid.to_le_bytes());
+                                    f.extend_from_slice(&payload);
+                                    f
+                                }));
+                            }
+                        } else {
+                            bt.shared.drain_acl_out().for_each(drop); // descarta sem link
+                        }
+                    }
+                    for pkt in acl_out {
+                        let bytes = pkt.encode();
+                        let _ = acl_out_ep.write(&bytes);
                     }
                 }
                 Source::EventEp => {
@@ -186,6 +220,13 @@ fn run(scheme: &str, port: xhcid_interface::PortId, if_num: u8) -> Result<(), &'
                     match event_ep.read(&mut pkt) {
                         Ok(0) | Err(_) => {}
                         Ok(n) => bt.shared.handle_hci_event(&pkt[..n]),
+                    }
+                }
+                Source::BulkIn => {
+                    let mut pkt = [0u8; 1024];
+                    match acl_in_ep.read(&mut pkt) {
+                        Ok(0) | Err(_) => {}
+                        Ok(n) => bt.shared.handle_acl(&pkt[..n]),
                     }
                 }
             }

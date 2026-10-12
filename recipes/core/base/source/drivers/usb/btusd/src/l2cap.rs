@@ -101,3 +101,272 @@ mod l2cap_tests {
         assert!(rest.is_empty());
     }
 }
+
+// ==== L2CAP signaling (CID 0x0001) + gerente de canais ====
+
+/// CID reserved para comandos de sinalizacao L2CAP.
+pub const CID_SIGNALING: u16 = 0x0001;
+/// PSM do SDP (Service Discovery Protocol).
+pub const PSM_SDP: u16 = 0x0001;
+
+// Codigos de sinalizacao (subset necessario p/ canais de dados)
+pub const SIG_CONN_REQ: u8 = 0x02;
+pub const SIG_CONN_RSP: u8 = 0x03;
+pub const SIG_CONFIG_REQ: u8 = 0x04;
+pub const SIG_CONFIG_RSP: u8 = 0x05;
+pub const SIG_DISCONN_REQ: u8 = 0x06;
+pub const SIG_DISCONN_RSP: u8 = 0x07;
+
+/// Um comando de sinalizacao: [code][ident][len u16][data].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SigPacket {
+    pub code: u8,
+    pub ident: u8,
+    pub data: Vec<u8>,
+}
+
+impl SigPacket {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + self.data.len());
+        out.push(self.code);
+        out.push(self.ident);
+        out.extend_from_slice(&(self.data.len() as u16).to_le_bytes());
+        out.extend_from_slice(&self.data);
+        out
+    }
+
+    /// Decodifica um payload (payload do ACL em CID 1).
+    pub fn decode(input: &[u8]) -> Option<SigPacket> {
+        if input.len() < 4 {
+            return None;
+        }
+        let len = u16::from_le_bytes([input[2], input[3]]) as usize;
+        if input.len() < 4 + len {
+            return None;
+        }
+        Some(SigPacket {
+            code: input[0],
+            ident: input[1],
+            data: input[4..4 + len].to_vec(),
+        })
+    }
+}
+
+/// Identificadores validos de canais dinamicos L2CAP (0x0040-0xFFFF).
+pub const CID_FIRST_DYNAMIC: u16 = 0x0040;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelState {
+    WaitConnectRsp,
+    WaitConfigReq,
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone)]
+pub struct Channel {
+    pub scid: u16,
+    pub dcid: Option<u16>,
+    pub handle: u16, // connection handle do link ACL
+    pub psm: u16,
+    pub state: ChannelState,
+}
+
+#[derive(Debug, Default)]
+pub struct ChannelTable {
+    channels: Vec<Channel>,
+    next_scid: u16,
+}
+
+impl ChannelTable {
+    pub fn new() -> Self {
+        Self {
+            channels: Vec::new(),
+            next_scid: CID_FIRST_DYNAMIC,
+        }
+    }
+
+    /// Aloca SCID local e emite L2CAP Connection Request (SIG no CID 1).
+    pub fn open(&mut self, handle: u16, psm: u16, ident: u8) -> (Channel, SigPacket) {
+        let scid = self.next_scid;
+        self.next_scid = self.next_scid.wrapping_add(1);
+        if self.next_scid < CID_FIRST_DYNAMIC {
+            self.next_scid = CID_FIRST_DYNAMIC;
+        }
+        let ch = Channel {
+            scid,
+            dcid: None,
+            handle,
+            psm,
+            state: ChannelState::WaitConnectRsp,
+        };
+        self.channels.push(ch.clone());
+
+        let mut data = Vec::with_capacity(4);
+        data.extend_from_slice(&psm.to_le_bytes());
+        data.extend_from_slice(&scid.to_le_bytes());
+        let sig = SigPacket {
+            code: SIG_CONN_REQ,
+            ident,
+            data,
+        };
+        (ch, sig)
+    }
+
+    /// Processa o Connection Response do remoto; Some(dcid) se aceito.
+    pub fn on_conn_rsp(&mut self, scid: u16, dcid: u16, result: u16, ident_rsp: u8) -> Result<(u16, SigPacket), &'static str> {
+        let ch = self
+            .channels
+            .iter_mut()
+            .find(|c| c.scid == scid)
+            .ok_or("l2cap: resposta p/ canal desconhecido")?;
+        if result != 0 || dcid == 0 {
+            ch.state = ChannelState::Closed;
+            return Err("l2cap: conexao recusada pelo remoto");
+        }
+        ch.dcid = Some(dcid);
+        ch.state = ChannelState::WaitConfigReq;
+
+        // Responde com Configuration Request minima (sem opcoes)
+        let mut data = Vec::with_capacity(4);
+        data.extend_from_slice(&dcid.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes()); // flags
+        Ok((
+            dcid,
+            SigPacket {
+                code: SIG_CONFIG_REQ,
+                ident: ident_rsp.wrapping_add(1),
+                data,
+            },
+        ))
+    }
+
+    /// Configuration Response do remoto confirma -> canal aberto.
+    pub fn on_config_rsp(&mut self, dcid: u16, result: u16) -> Result<(), &'static str> {
+        let ch = self
+            .channels
+            .iter_mut()
+            .find(|c| c.dcid == Some(dcid))
+            .ok_or("l2cap: config rsp de canal desconhecido")?;
+        if result != 0 {
+            ch.state = ChannelState::Closed;
+            return Err("l2cap: config falhou");
+        }
+        ch.state = ChannelState::Open;
+        Ok(())
+    }
+
+    /// Empacota dados de um canal aberto num ACL (PB=2 first non-flushable).
+    pub fn encode_for(&self, dcid: u16, payload: &[u8]) -> Result<AclPacket, &'static str> {
+        let ch = self
+            .channels
+            .iter()
+            .find(|c| c.dcid == Some(dcid) && c.state == ChannelState::Open)
+            .ok_or("l2cap: canal nao esta aberto")?;
+        let mut frame = Vec::with_capacity(4 + payload.len());
+        frame.extend_from_slice(&dcid.to_le_bytes());
+        frame.extend_from_slice(&0u16.to_le_bytes()); // payload len L2CAP header? simplificacao: nada
+        // L2CAP B-frame header: [length u16][dcid u16]
+        let mut acl_payload = Vec::with_capacity(4 + payload.len());
+        acl_payload.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        acl_payload.extend_from_slice(&dcid.to_le_bytes());
+        acl_payload.extend_from_slice(payload);
+        let _ = frame;
+        Ok(AclPacket::new(ch.handle, 2, 0, acl_payload))
+    }
+
+    /// Decodifica ACL recebido e o roteia p/ o canal aberto certo.
+    pub fn route(&self, pkt: &AclPacket) -> Result<(u16, Vec<u8>), &'static str> {
+        if pkt.payload.len() < 4 {
+            return Err("l2cap: acl payload truncado");
+        }
+        let dcid = u16::from_le_bytes([pkt.payload[2], pkt.payload[3]]);
+        let _len = u16::from_le_bytes([pkt.payload[0], pkt.payload[1]]);
+        let ch = self
+            .channels
+            .iter()
+            .find(|c| c.dcid == Some(dcid) && c.state == ChannelState::Open)
+            .ok_or("l2cap: acl p/ canal nao aberto")?;
+        Ok((ch.scid, pkt.payload[4..].to_vec()))
+    }
+}
+
+#[cfg(test)]
+mod l2cap_sig_tests {
+    use super::*;
+    use alloc::vec;
+
+    const H: u16 = 0x20;
+
+    #[test]
+    fn sig_roundtrip() {
+        let sig = SigPacket {
+            code: SIG_CONN_REQ,
+            ident: 9,
+            data: vec![0x01, 0x00, 0x40, 0x00], // PSM SDP, SCID 0x40
+        };
+        let enc = sig.encode();
+        assert_eq!(enc[0], 0x02);
+        assert_eq!(enc[1], 9);
+        let len = u16::from_le_bytes([enc[2], enc[3]]);
+        assert_eq!(len, 4);
+        let dec = SigPacket::decode(&enc).unwrap();
+        assert_eq!(dec, sig);
+        // truncados
+        assert!(SigPacket::decode(&enc[..5]).is_none());
+    }
+
+    #[test]
+    fn canal_abre_fecha_to_config() {
+        let mut t = ChannelTable::new();
+        let (ch, sig) = t.open(H, PSM_SDP, 1);
+        assert_eq!(ch.scid, CID_FIRST_DYNAMIC);
+        assert_eq!(sig.code, SIG_CONN_REQ);
+        assert_eq!(u16::from_le_bytes([sig.data[0], sig.data[1]]), PSM_SDP);
+
+        // remoto aceita com DCID 0x0050 -> config req sai
+        let (dcid, cfg) = t.on_conn_rsp(ch.scid, 0x0050, 0, 7).unwrap();
+        assert_eq!(dcid, 0x0050);
+        assert_eq!(cfg.code, SIG_CONFIG_REQ);
+        assert_eq!(u16::from_le_bytes([cfg.data[0], cfg.data[1]]), 0x0050);
+
+        // config rsp ok -> open; dados saem validos
+        t.on_config_rsp(0x0050, 0).unwrap();
+        let acl = t.encode_for(0x0050, b"ping").unwrap();
+        assert_eq!(acl.handle, H);
+        assert_eq!(acl.pb, 2);
+        // L2CAP b-frame: [len][dcid][data]
+        assert_eq!(&acl.payload[..2], &4u16.to_le_bytes());
+        assert_eq!(&acl.payload[2..4], &0x0050u16.to_le_bytes());
+        assert_eq!(&acl.payload[4..], b"ping");
+
+        // roteamento de volta
+        let (scid2, data) = t.route(&acl).unwrap();
+        assert_eq!(scid2, CID_FIRST_DYNAMIC);
+        assert_eq!(data, b"ping");
+    }
+
+    #[test]
+    fn canais_negados_e_psm_fechado() {
+        let mut t = ChannelTable::new();
+        let (ch, _) = t.open(H, PSM_SDP, 1);
+        // resposta com result != 0 = recusada
+        assert!(t.on_conn_rsp(ch.scid, 0, 2, 1).is_err()); // result 2 = psm nao suportado
+        assert_eq!(
+            t.channels[0].state,
+            ChannelState::Closed
+        );
+        // dados em canal fechado => erro
+        assert!(t.encode_for(0x0050, b"x").is_err());
+    }
+
+    #[test]
+    fn acl_route_rejeita_canais_nao_abertos() {
+        let mut t = ChannelTable::new();
+        t.open(H, PSM_SDP, 1);
+        // ainda nao ha conn rsp; ACL que finge dcid 0x40 deve falhar
+        let payload = [2u8, 0, 0x40, 0, 9, 9];
+        let p = AclPacket::new(H, 2, 0, payload.to_vec());
+        assert!(t.route(&p).is_err());
+    }
+}
