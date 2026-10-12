@@ -34,6 +34,18 @@ Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perd
 
 ## Fila
 
+## 2026-10-12d — PIPELINE DE CONEXAO fechado (scan/assoc/handshake)
+
+- [DONE] net80211::link — maquina de estados Disconnected->Scanning->Associating->Associated
+  + parser de beacon (SSID IE, dedup BSSID) — 5 testes
+- [DONE] mt7921d: scan via REG_SCAN_CTRL; beacons/assoc-resp chegam pela RX ring
+  (mgmt frames processados no driver, nao sobem ao netstack); assoc request real
+  sai pela TX ring (write_ring sem gate); Associated somente apos status ok;
+  dados bloqueiam enquanto nao associado
+- [DONE] wpa_supplicant: integracao PSK->PMK->PTK(KCK/KEK/TK)->CCMP roundtrip
+- [DO ZERO HW] resta so validar contra AP real (firmware eventos variam por chip)
+- PR#1: 14 commits (net80211 link + pipeline) — suite: 165 testes + pipeline E2E
+
 ## 2026-10-12c — rings reais em TODOS os drivers
 
 - [DONE] Molde ath9k replicado em rtw88 (33/33), mt7921d (32+35), iwlwifi (33/33).
