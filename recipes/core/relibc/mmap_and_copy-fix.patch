@@ -1,0 +1,36 @@
+diff --git a/src/ld_so/dso.rs b/src/ld_so/dso.rs
+index f029dfb2..37b0251b 100644
+--- a/src/ld_so/dso.rs
++++ b/src/ld_so/dso.rs
+@@ -601,6 +601,9 @@ impl DSO {
+             }
+             bounds_opt.ok_or_else(|| "Unable to find PT_LOAD section".to_string())?
+         };
++        // Keep the aligned minimum around: for PIE binaries the slice is
++        // indexed by segment vaddr minus this value, not by the raw vaddr.
++        let bounds_min = bounds.0;
+         log::trace!("  bounds {:#x}, {:#x}", bounds.0, bounds.1);
+         // Allocate memory
+         let mmap = unsafe {
+@@ -670,7 +673,9 @@ impl DSO {
+ 
+                     let mmap_data = {
+                         let range = if is_pie_enabled(elf) {
+-                            let addr = ph.p_vaddr(endian) as usize;
++                            // PIE: the slice starts at bounds_min, so index by
++                            // the offset from it, not by the raw segment vaddr.
++                            let addr = ph.p_vaddr(endian) as usize - bounds_min;
+                             addr..addr + obj_data.len()
+                         } else {
+                             let addr = ph.p_vaddr(endian) as usize - mmap.as_ptr() as usize;
+@@ -738,7 +743,9 @@ impl DSO {
+             let bytes: [u8; size_of::<Dyn>() / 2] =
+                 ((&raw const _r_debug).cast::<*const RTLDDebug>() as usize).to_ne_bytes();
+             let start = if is_pie_enabled(elf) {
+-                vaddr + i * size_of::<Dyn>() + size_of::<Dyn>() / 2
++                // Same offset as the copy loop: index into the slice from
++                // bounds_min, not from zero.
++                vaddr - bounds_min + i * size_of::<Dyn>() + size_of::<Dyn>() / 2
+             } else {
+                 vaddr + i * size_of::<Dyn>() + size_of::<Dyn>() / 2
+                     - mmap.as_ptr().cast_mut() as usize
