@@ -12,6 +12,7 @@
 extern crate alloc;
 
 pub mod ieee80211;
+pub mod link;
 pub mod crypto;
 pub mod ratectl;
 pub mod regulatory;
