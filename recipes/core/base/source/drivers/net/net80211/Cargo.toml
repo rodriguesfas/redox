@@ -1,0 +1,27 @@
+[package]
+name = "net80211"
+version = "0.1.0"
+edition = "2021"
+description = "FreeBSD net80211 stack ported to Redox OS"
+license = "BSD-3-Clause"
+repository = "https://github.com/redox-os/redox"
+
+[dependencies]
+bitflags = "2"
+crc = "3.0"
+log = "0.4"
+spin = "0.9"
+aes = "0.8"
+ccm = "0.5"
+aes-gcm = { version = "0.11", optional = true }
+getrandom = { version = "=0.2", default-features = false, features = ["custom"] }
+arrayref = "0.3"
+sha1 = "0.11.0"
+
+[features]
+default = ["std"]
+std = []
+gcmp = ["aes-gcm"]
+
+[target.'cfg(all(target_arch = "aarch64", target_os = "none"))'.dependencies]
+getrandom = { version = "=0.2", features = ["custom"] }
