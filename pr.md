@@ -34,6 +34,14 @@ Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perd
 
 ## Fila
 
+## 2026-10-13b — #27 audio vol/mute end
+
+- `audiohw` scheme agora tem arquivos vol/mute (matematica pura em hda/vol.rs,
+  5 testes), a caminho de `apply_master_volume()` (caminho DAC->out).
+- ihdad compila e empacota; proximos: booster PipeWire (parte userspace maior
+  fica propositalmente de fora do escopo driver).
+- Suite: wifi 165 + bt 51 + i2c-hid 8 + i2c-dwd 8 + ihdad 5 (+ base).
+
 ## 2026-10-13 — Item #31 (Input I2C) implementado em sw
 
 - i2c-hidd daemon: probe I2C-HID (fetch desc, power up, polls) + fd de
