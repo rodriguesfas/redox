@@ -34,6 +34,16 @@ Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perd
 
 ## Fila
 
+## 2026-10-13c — Imagem de validacao bootavel CONSTRUIDA
+
+- build/x86_64/aios-wifi-test/harddrive.img (512MB, ISO bootable, GPT+EFI).
+  Contem: base (4 daemons wifi + btusd + i2c-hidd + wpa_supplicant), kernel,
+  bootloader, relibc, ion.
+- Cook global cozinhou relibc (submodulos restaurados) + toda a cadeia.
+- Boot-safe checado em QEMU headless (20s sem crash; Redox loga VGA).
+- Prowise test real: sudo hw-validate.sh --dangerous (derruba wifi host!).
+- Issue #28: TRIM/DSM implementado (commit em dev).
+
 ## 2026-10-13b — #27 audio vol/mute end
 
 - `audiohw` scheme agora tem arquivos vol/mute (matematica pura em hda/vol.rs,
