@@ -1,0 +1,43 @@
+name: lab-tests
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev, master]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/redox-os/redox-builder:latest # Padrao do Redox
+      options: ""
+    env:
+      RUSTFLAGS: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 1
+
+      - name: Rust toolchain contained (usa do builder)
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Unit tests drivers WiFi/BT/i2c deps (suite)
+        working-directory: recipes/core/base/source
+        run: |
+          for pkg in iwlwifi rtw88 mt7921d ath9k net80211 btusd \
+                     iwlwifi_net i2c-hid i2c-dwd i2c-hidd driver-block nvmed \
+                     wpa_supplicant; do
+            echo "=== $pkg ==="
+            cargo test -p $pkg --quiet || exit 1
+          done
+
+      - name: Empacotamento (prova de integracao)
+        run: |
+          CI=1 MAKEFLAGS= make r.base CONFIG_NAME=aios-wifi-test \
+            PODMAN_BUILD=0 NOT_ON_PODMAN=1 RUNNER=yes 2>&1 | tail -20
