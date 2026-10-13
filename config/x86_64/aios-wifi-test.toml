@@ -1,0 +1,11 @@
+# AIOS WiFi/BT hardware smoke — imagem de prova p/ Acer Nitro ANV15
+#
+# Conteudo: base (drivers WiFi/BT meus) + shell ion + rede/pcid da fail the Silly Test.
+# Boot via USB com mt7921e desconectado ou QEMU com passthrough (hw-validate.sh).
+include = ["../base.toml"]
+
+[general]
+filesystem_size = 512
+
+[packages]
+ion = {}
