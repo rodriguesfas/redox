@@ -1,0 +1,13 @@
+[package]
+name = "i2c-hid"
+description = "USB HID over I2C protocol codec (touchpad/touchscreen)"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+[features]
+default = []
+
+[lints]
+workspace = true
