@@ -11,28 +11,40 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout fork (dev)
         uses: actions/checkout@v4
         with:
           submodules: false
           fetch-depth: 1
 
-      - name: Rust toolchain (nightly-2026-05-24, mesmo do build local)
+      - name: Rust nightly do build local
         uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-05-24
           components: rust-src, llvm-tools, clippy, rustfmt
 
-      - name: Suite de testes WiFi/BT/I2C
+      # O workspace recipes/core/base/source ee parcial no fork: adicionamos apenas
+      # drivers/Cargo.toml/Makefile/net. Os outros membros (audiod etc.) moram em base.git —
+      # cloneiamos duro e o nosso por cima (sem --delete preserva nossas pastas).
+      - name: Popula source/ com base.git (rsync overlay garante nossos arquivos)
+        run: |
+          set -e
+          git clone --depth 1 https://gitlab.redox-os.org/redox-os/base.git /tmp/base-src
+          REV=$(grep -m1 '^rev' recipes/core/base/recipe.toml | sed 's/.*"\(.*\)".*/\1/')
+          # --ignore-existing: preenche so o que falta; NAO sobrescreve nossos drivers
+          rsync -a --ignore-existing /tmp/base-src/ recipes/core/base/source/
+          ls recipes/core/base/source/audiod/Cargo.toml
+          grep -c ath9k_net recipes/core/base/source/Cargo.toml
+
+      - name: Suite de testes (drivers WiFi/BT/i2c/storage/audio)
         working-directory: recipes/core/base/source
         run: |
           set -e
-          for pkg in iwlwifi rtw88 mt7921d ath9k net80211 btusd \
-                     iwlwifi_net i2c-hid i2c-dwd driver-block nvmed \
-                     wpa_supplicant i2c-hidd; do
+          PKGS="iwlwifi rtw88 mt7921d ath9k net80211 btusd iwlwifi_net i2c-hid i2c-dwd driver-block nvmed wpa_supplicant i2c-hidd"
+          for pkg in $PKGS; do
             echo "=== $pkg ==="
             cargo test -p "$pkg"
           done
 
       - name: Resumo
-        run: echo "suite completa de drivers rodada"
+        run: echo "suite completa rodada"
