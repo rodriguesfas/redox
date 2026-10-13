@@ -34,6 +34,17 @@ Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perd
 
 ## Fila
 
+## 2026-10-13 — Item #31 (Input I2C) implementado em sw
+
+- i2c-hidd daemon: probe I2C-HID (fetch desc, power up, polls) + fd de
+  eventos p/ inputd; empacotado (usr/lib/drivers).
+- i2c-hid crate (codec protocolar I2C HID), i2c-dwd (DesignWare master) com
+  8+8 testes; daemon test host tem 1 sanity link (SDL2 host-link dodged com
+  cfg-gating).
+- Restante p/ #31 real close: device touch pixart handshake + inputd event
+  path juntos na maquina.
+- pr:Item 3 (validacao hw) esta pronto (hw-validate.sh).
+
 ## 2026-10-12i — items 1, 2, 3 da ordem "seguir 1 2 3"
 
 1. [DONE] SDP minimal (btusd): codec+registry+server, inbound channels. 51 testes.
