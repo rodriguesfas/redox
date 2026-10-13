@@ -1,0 +1,6 @@
+[[drivers]]
+name = "Intel I2C Serial IO #0 (Alder Lake)"
+class = 0x0C
+subclass = 0x80
+ids = { 0x8086 = [0x51e8] }
+command = ["i2c-hidd"]

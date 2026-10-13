@@ -82,6 +82,7 @@ members = [
     "drivers/usb/btusd",
     "drivers/i2c/dwd",
     "drivers/input/i2c_hid",
+    "drivers/input/i2c_hidd",
 ]
 
 # Bootstrap needs it's own profile configuration

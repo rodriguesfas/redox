@@ -355,3 +355,60 @@ mod tests {
         assert_eq!(w[3], 5); // report id
     }
 }
+
+/// Estado de energia
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerState {
+    On,
+    Sleep,
+}
+
+// ============================================================
+// Touch report parsing (moved from i2c-hidd to keep it host-testable)
+// ============================================================
+
+/// Pacote de toque (formato touchpad multiponto comum — PixArt/Elan-like).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TouchPoint {
+    pub id: u8,
+    pub x: u16,
+    pub y: u16,
+    pub contact: bool,
+}
+
+/// Interpreta o bloco de contato: [report_id][tip/flags][id][x lo][x hi][y lo][y hi]
+pub fn parse_contact_block(buf: &[u8]) -> Option<TouchPoint> {
+    if buf.len() < 8 {
+        return None;
+    }
+    let contact = buf[2] & 0x01 != 0;
+    let id = buf[3];
+    let x = u16::from_le_bytes([buf[4], buf[5]]);
+    let y = u16::from_le_bytes([buf[6], buf[7]]);
+    Some(TouchPoint { id, x, y, contact })
+}
+
+#[cfg(test)]
+mod touch_tests {
+    use super::*;
+
+    #[test]
+    fn contact_block_valid() {
+        let tp = parse_contact_block(&[1, 1, 1, 2, 0x10, 0x00, 0x20, 0x00]).unwrap();
+        assert_eq!(tp.id, 2);
+        assert_eq!(tp.x, 16);
+        assert_eq!(tp.y, 32);
+        assert!(tp.contact);
+    }
+
+    #[test]
+    fn contact_block_short_fails() {
+        assert!(parse_contact_block(&[1u8, 2, 3]).is_none());
+    }
+
+    #[test]
+    fn no_contact_marks_up() {
+        let tp = parse_contact_block(&[1, 1, 0, 2, 0x10, 0x00, 0x20, 0x00]).unwrap();
+        assert!(!tp.contact);
+    }
+}

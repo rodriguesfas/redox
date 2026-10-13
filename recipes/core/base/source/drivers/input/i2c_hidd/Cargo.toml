@@ -1,0 +1,27 @@
+[package]
+name = "i2c-hidd"
+description = "I2C HID daemon o/ DesignWare I2C + i2c-hid codec (#31)"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+libredox.workspace = true
+redox_syscall = { workspace = true, features = ["std"] }
+log.workspace = true
+orbclient = { version = "0.4.1", default-features = false }
+
+daemon = { path = "../../../daemon" }
+common = { path = "../../common" }
+pcid = { path = "../../pcid" }
+inputd = { path = "../../inputd" }
+i2c-dwd = { path = "../../i2c/dwd" }
+i2c-hid = { path = "../i2c_hid" }
+redox_event.workspace = true
+plain.workspace = true
+
+[features]
+default = []
+
+[lints]
+workspace = true
