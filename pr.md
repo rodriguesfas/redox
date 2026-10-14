@@ -34,6 +34,18 @@ Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perd
 
 ## Fila
 
+## 2026-10-13d — decisao: tarefas *sem* quebrar o sistema (hardware real fica p/ voce)
+
+- [DONE] #38 CI: workflow lab-tests no GitHub Actions do fork (suite dos crates,
+  passe em 1m06s, comecou branch dev — novo gate de merge envio).
+- [DONE] #30 ACPI/Battery: acpid ganha arquivo 'battery' no scheme (eval _BST);
+  4 testes do parser de status; sem suspender/sleep: aquilo e de board + HW.
+- [DONE] #28 TRIM jnovo.
+- [DONE] #29 BT uplink pronto (usable em testes).
+- [DONE] #31 i2c.
+- [DONE] #27 audio tapa gap de vol/mute.
+- Boot + testes single-machine: pendente de usuario no Acer alvo.
+
 ## 2026-10-13c — Imagem de validacao bootavel CONSTRUIDA
 
 - build/x86_64/aios-wifi-test/harddrive.img (512MB, ISO bootable, GPT+EFI).
