@@ -10,6 +10,7 @@ members = [
     "initfs",
     "initfs/tools",
     "ipcd",
+    "journald",
     "logd",
     "netstack",
     "ptyd",

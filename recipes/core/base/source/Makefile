@@ -34,9 +34,14 @@ endif
 # For testing/benchmarking only
 # BASE_BINS += drawbench
 
+# Installed from packages whose name differs from the binary name.
+# journalctl lives in the journald package together with the logging daemon.
+BASE_EXTRA_BINS = journalctl
+BASE_EXTRA_CARGO_ARGS = -p journald
+
 INITFS_CARGO_ARGS = $(foreach bin,$(INITFS_BINS),-p $(bin))
 INITFS_DRIVERS_CARGO_ARGS = $(foreach bin,$(INITFS_DRIVERS_BINS),-p $(bin))
-BASE_CARGO_ARGS = $(foreach bin,$(BASE_BINS),-p $(bin))
+BASE_CARGO_ARGS = $(foreach bin,$(BASE_BINS),-p $(bin)) $(BASE_EXTRA_CARGO_ARGS)
 DRIVERS_CARGO_ARGS = $(foreach bin,$(DRIVERS_BINS),-p $(bin))
 
 .PHONY: all base install install-base test
@@ -88,7 +93,7 @@ base:
 install-base: base $(SYSROOT)/bin/redoxfs
 	@mkdir -pv "$(DESTDIR)/usr/bin" "$(DESTDIR)/usr/lib/drivers"
 # Distribute binaries
-	@for bin in $(BASE_BINS); do \
+	@for bin in $(BASE_BINS) $(BASE_EXTRA_BINS); do \
 		cp -v "$(TARGET_DIR)/$$bin" "$(DESTDIR)/usr/bin"; \
 	done
 	@for bin in $(DRIVERS_BINS); do \

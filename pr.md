@@ -34,6 +34,46 @@ Atualizado: 2026-10-11 · branch `dev` (redox-os) — **reconstruída após perd
 
 ## Fila
 
+## 2026-10-15 — #34 Init System: journald estruturado (slice 1/2: core + journalctl)
+
+Alvo escolhido: **#34 (P0, blocker de userspace)** — item "journald / structured logging"
++ DoD "Logs estruturados (journalctl-like)". Hoje o `logd` é apenas um *sink* de texto
+(`/scheme/log`, `add_sink`), sem campos, prioridade, boot id ou query.
+
+- [DONE] Crate novo `journald` (workspace member) com core 100% host-testável:
+  - `entry.rs` — `JournalEntry` (`FIELD=value`), validação de nomes (maiúsculas/dígito/`_`,
+    prefixo `__` reservado), formato **export** com escape (`\\`, `\n`, `\r`) e round-trip,
+    JSON por entrada, `encoded_len` p/ rotação.
+  - `priority.rs` — `Priority` (syslog 0..7, ordenação = severidade), nomes/aliases
+    (`err`/`error`, `warn`/`warning`, `panic`/`emerg`, numérico) para `-p`.
+  - `syslog.rs` — `<PRI>` (facility*8+severity), structured data `[ID k=v ...]`,
+    heurística `ident[pid]: msg` (rejeita frases), CRLF, metadados `_BOOT_ID`/`_HOSTNAME`/`_SOURCE_REALTIME_TIMESTAMP`.
+  - `time.rs` — `--since/--until` (`YYYY-MM-DD[ HH:MM[:SS]]`, `T...Z`, `@epoch`, `-1h/-30m/-2d/-1w`,
+    `now/today/yesterday/tomorrow`), `format_short/iso/timestamp`; aritmética civil pura.
+  - `query.rs` — filtros AND: unit/identifier, `-p` (upper bound), janela de tempo,
+    boot (`-b` current / por id), grep (case-insensitive por padrão), `FIELD=value|!=|~|!~`.
+  - `store.rs` — `JournalStore`: append, query/tail, limites (`with_max_bytes` rotaciona),
+    `vacuum_before`/`vacuum_to_bytes`, `boot_ids`/`boot_summary` (`--list-boots`),
+    boot id 32-hex, leitura/escrita/append em arquivo.
+  - `cli.rs` — parser completo do `journalctl` (flags curtas coladas `-n5`, `--flag=value`,
+    `--`, posicionais `FIELD=value`, `-o short|export|json|json-pretty|cat`, `--file`, `-f`, `--list-boots`).
+  - `render.rs` — short (`Jul 15 12:00:00 host unit[pid]: msg`), cat, export, json, lista de boots.
+  - `src/bin/journalctl.rs` — CLI real (lê `--file` ou `/scheme/log/journal`).
+- [DONE] **93 testes** no crate (90 unit + 3 de integração `tests/pipeline.rs`);
+  verificado ponta-a-ponta rodando o binário de verdade com um journal real
+  (`-p err`, `-u`, `-n`, `-g`, `--since`, `-o json`, `-o export` round-trip, `--list-boots`).
+- [DONE] Empacotado: `journalctl` instalado em `/usr/bin` (Makefile `BASE_EXTRA_BINS`,
+  pois o pacote se chama `journald`); CI `lab-tests` passa a rodar `journald` + `acpid`.
+- [DONE] Sem regressão: **341 testes verdes** no host (wifi/bt/i2c/storage/acpi/journald/init).
+- [PENDING] slice 2/2: `journald` daemon escrevendo o journal a partir do `/scheme/log`
+  (integração no `logd`) + `--follow`; depois `logind` → `networkd` → `resolved` (mesma issue).
+
+## 2026-10-15b — status: issues de driver fechadas
+
+- Fechadas no tracker `aios-b-612/aios`: #25 (WiFi), #27 (audio), #28 (TRIM), #29 (BT),
+  #30 (ACPI battery), #31 (i2c-hidd), #38 (CI). `dev` @ `13f348edd`, tree limpo.
+- Branch local `wifi-drivers` removida (já mergeada em `dev`).
+
 ## 2026-10-13d — decisao: tarefas *sem* quebrar o sistema (hardware real fica p/ voce)
 
 - [DONE] #38 CI: workflow lab-tests no GitHub Actions do fork (suite dos crates,
