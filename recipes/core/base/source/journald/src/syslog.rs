@@ -22,6 +22,11 @@ pub struct Source {
     pub boot_id: Option<String>,
     /// Host name of this machine.
     pub hostname: Option<String>,
+    /// Process that wrote the line, when the logging daemon knows it.
+    ///
+    /// This is the writer's `_PID`; an `identifier[pid]:` prefix in the text
+    /// itself takes precedence, being more specific.
+    pub pid: Option<u32>,
     /// Wall-clock seconds since the epoch when the line was received.
     pub now: i64,
 }
@@ -32,6 +37,7 @@ impl Source {
         Self {
             boot_id: None,
             hostname: None,
+            pid: None,
             now,
         }
     }
@@ -59,6 +65,9 @@ pub fn parse_line(line: &str, source: &Source) -> JournalEntry {
     }
     if let Some(hostname) = &source.hostname {
         entry.set_field(HOSTNAME, hostname.clone());
+    }
+    if let Some(pid) = source.pid {
+        entry.set_field(PID, pid.to_string());
     }
 
     let mut rest = line;
@@ -171,6 +180,7 @@ mod tests {
             boot_id: Some("boot1".to_owned()),
             hostname: Some("aios".to_owned()),
             now: 1_700_000_000,
+            ..Source::default()
         }
     }
 
@@ -295,5 +305,25 @@ mod tests {
                 vec![entry.clone()]
             );
         }
+    }
+
+    #[test]
+    fn writer_pid_is_recorded_and_text_pid_wins() {
+        let from_writer = Source {
+            pid: Some(7),
+            ..source()
+        };
+
+        // No pid in the text: the writer's pid is used.
+        let entry = parse_line("smolnetd: link up", &from_writer);
+        assert_eq!(entry.get(PID), Some("7"));
+
+        // A pid in the text is more specific.
+        let entry = parse_line("smolnetd[42]: link up", &from_writer);
+        assert_eq!(entry.get(PID), Some("42"));
+
+        // Without a source pid the field is simply absent.
+        let entry = parse_line("smolnetd: link up", &source());
+        assert_eq!(entry.get(PID), None);
     }
 }

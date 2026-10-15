@@ -39,7 +39,10 @@ impl OutputMode {
 }
 
 /// Default journal file, matching the location used by the daemon.
-pub const DEFAULT_JOURNAL_PATH: &str = "/scheme/log/journal";
+///
+/// `logd` writes to the volatile `logging` ramfs, created early in boot by
+/// `ramfs@logging.service` — the equivalent of systemd's `/run/log/journal`.
+pub const DEFAULT_JOURNAL_PATH: &str = "/scheme/logging/journal";
 
 /// Help text.
 pub const USAGE: &str = "\

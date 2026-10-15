@@ -65,8 +65,50 @@ Alvo escolhido: **#34 (P0, blocker de userspace)** — item "journald / structur
 - [DONE] Empacotado: `journalctl` instalado em `/usr/bin` (Makefile `BASE_EXTRA_BINS`,
   pois o pacote se chama `journald`); CI `lab-tests` passa a rodar `journald` + `acpid`.
 - [DONE] Sem regressão: **341 testes verdes** no host (wifi/bt/i2c/storage/acpi/journald/init).
-- [PENDING] slice 2/2: `journald` daemon escrevendo o journal a partir do `/scheme/log`
-  (integração no `logd`) + `--follow`; depois `logind` → `networkd` → `resolved` (mesma issue).
+- [PENDING] boot real na máquina (depende de você); depois `logind` → `networkd` → `resolved` (mesma issue).
+
+## 2026-10-15c — #34 slice 2/2: daemon journald no `logd` + `--follow`
+
+Fecha o DoD "Logs estruturados (journalctl-like)" do lado do produtor: quem escreve
+no `/scheme/log` agora cai num journal estruturado em disco.
+
+- [DONE] `journald/src/writer.rs` — `JournalWriter` (daemon side, só std → host-testável):
+  - config por ambiente (`JOURNAL_PATH`, `JOURNAL_MAX_BYTES`, `JOURNAL_BOOT_ID`,
+    `JOURNAL_HOSTNAME`/`HOSTNAME`, `JOURNAL_ENABLED=0` p/ desligar); default
+    **`/scheme/logging/journal`** (ramfs volátil criada no initfs por `ramfs@logging.service`
+    — equivalente ao `/run/log/journal`).
+  - abre *lazy* na primeira linha e tolera falha: reporta **uma vez** no stderr,
+    tenta de novo de forma ansiosa (8x) e depois espaçada (1/256) — um FS de log
+    ausente nunca vira tempestade de syscalls nem derruba o log.
+  - `write_line[_from]` poda CRLF (o `logd` manda `\r\n`), ignora linha vazia,
+    parseia e faz append+flush (flush = `--follow` enxerga na hora).
+  - rotação por compactação: passou de `max_bytes`, relê o journal, mantém os mais
+    novos até metade do limite e regrava (recupera registro truncado no meio).
+  - **boot id estável entre restarts**: sem `JOURNAL_BOOT_ID`, adota o boot do
+    journal existente (arquivo é volátil ⇒ é do boot corrente); só boot novo gera id
+    (`_BOOT_ID` = 32 hex). Assim `logd` reiniciar não vira "outro boot" no `-b`.
+  - `Source.pid` (`_PID` do processo escritor, `ctx.pid` vem do `logd`; `ident[pid]:`
+    no texto continua tendo precedência).
+- [DONE] `journald/src/follow.rs` — lado leitor:
+  - `complete_prefix_len`/`decode_complete`: só consome registros terminados por linha
+    vazia (registro em escrita nunca é lido pela metade) e pula registro malformado
+    em vez de abortar o read.
+  - `Tail` (offset + restart automático se o arquivo encolheu por rotação);
+    `Follower` (lê do fim, aplica a `Query`, renderiza) — o motor do `--follow`.
+- [DONE] `logd` (integração mínima, thread consumidora onde a linha já está montada):
+  `OutputCmd::Log { line, pid }`, `journald::JournalWriter::from_env()` e
+  `journal.write_line_from(...)` antes do fan-out para os sinks. Se o journal falhar,
+  o `logd` continua exatamente como antes (best effort, sem bloquear; canal unbounded).
+- [DONE] `journalctl --follow` real (poll de 250 ms), começando no fim do arquivo e
+  sem replay do backlog; `-n 0 -f` funciona como `tail -f`.
+- [DONE] **115 testes** no crate (111 unit + 4 integração). Sem regressão: **365 testes
+  verdes** no host nos 15 pacotes (wifi/bt/i2c/storage/acpi/journald/…), 0 falhas.
+- [DONE] Compilação redox comprovada: `cook base` → `Compiling journald` + `Compiling logd`,
+  `build/initfs/bin/logd` (15:33) contém `logd: journal `, `journald: cannot write `,
+  `/scheme/logging/journal`, `JOURNAL_*`; `stage/usr/bin/journalctl` com `cannot follow`.
+- [DONE] Smoke test do binário real: `journalctl --file … -f -n 0 -o cat` imprimiu só as
+  linhas novas, juntou registro partido entre dois writes e não vazou metade de registro.
+- [PENDING] boot real (initfs com o `logd` novo + `journalctl -b`/`-f` na máquina) — depende de você.
 
 ## 2026-10-15b — status: issues de driver fechadas
 

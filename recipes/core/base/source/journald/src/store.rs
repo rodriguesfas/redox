@@ -309,6 +309,7 @@ mod tests {
             boot_id: Some("boot-a".to_owned()),
             hostname: None,
             now: 10,
+            ..Source::default()
         };
         let entry = store.append_line("init[1]: hello", &source);
         assert_eq!(entry.message(), Some("hello"));

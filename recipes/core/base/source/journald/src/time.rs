@@ -8,6 +8,7 @@
 //! `yesterday` and `tomorrow`.
 
 use std::fmt;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// One day in seconds.
 pub const DAY: i64 = 86_400;
@@ -92,6 +93,17 @@ fn split_time(rest: &str) -> Result<(i64, i64, i64), TimeError> {
         return err(rest);
     }
     Ok((hour, minute, second))
+}
+
+/// Wall-clock seconds since the epoch.
+///
+/// Falls back to `0` when the clock is not set yet, which is what happens very
+/// early in boot before the real-time clock service is up.
+pub fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Parses a timestamp string relative to `now` (seconds since the epoch).

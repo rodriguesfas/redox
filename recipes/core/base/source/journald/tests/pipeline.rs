@@ -6,9 +6,13 @@ use std::fs;
 use std::path::PathBuf;
 
 use journald::cli::{parse_args, OutputMode};
+use journald::follow::Follower;
+use journald::priority::Priority;
+use journald::query::Query;
 use journald::render::{render, render_boot_list};
 use journald::store::JournalStore;
 use journald::syslog::Source;
+use journald::writer::{JournalConfig, JournalWriter};
 
 const BOOT_ID: &str = "00000000deadbeef123456789abcdef0";
 
@@ -24,6 +28,7 @@ fn write_sample_journal(path: &std::path::Path) {
         boot_id: Some(BOOT_ID.to_owned()),
         hostname: Some("aios".to_owned()),
         now: 1_792_022_400,
+        ..Source::default()
     };
 
     let lines = [
@@ -116,6 +121,7 @@ fn boot_listing_from_a_persisted_journal() {
             boot_id: Some(boot.to_owned()),
             hostname: Some("aios".to_owned()),
             now: 1_792_022_400,
+            ..Source::default()
         };
         let entry = journald::syslog::parse_line(message, &source);
         JournalStore::append_to_path(&path, &entry).unwrap();
@@ -152,6 +158,7 @@ fn vacuuming_keeps_the_journal_bounded_on_disk() {
             boot_id: Some(BOOT_ID.to_owned()),
             hostname: Some("aios".to_owned()),
             now: 1_792_022_400 + index,
+            ..Source::default()
         };
         store.append_line(&format!("logd[1]: entry {index}"), &source);
     }
@@ -163,6 +170,67 @@ fn vacuuming_keeps_the_journal_bounded_on_disk() {
     let reloaded = JournalStore::read_from_path(&path).unwrap();
     assert_eq!(reloaded.len(), 5);
     assert_eq!(reloaded.entries()[0].message(), Some("entry 5"));
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_follower_sees_exactly_what_the_writer_appends() {
+    let dir = scratch("follow-e2e");
+    let path = dir.join("journal");
+
+    let mut writer = JournalWriter::new(JournalConfig {
+        path: path.clone(),
+        max_bytes: 4096,
+        boot_id: None,
+        hostname: Some("aios".to_owned()),
+    });
+
+    // The daemon writes the boot line before anyone follows.
+    assert!(writer.write_line("<6>init[1]: booting"));
+
+    let mut follower = Follower::new(&path, Query::new(), OutputMode::Short, "aios").unwrap();
+    let mut out = Vec::new();
+    assert_eq!(
+        follower.render(&mut out).unwrap(),
+        0,
+        "the backlog must not be replayed by --follow"
+    );
+
+    // New lines reach the follower, without their CRLF ending.
+    assert!(writer.write_line("<4>smolnetd: link down on eth0\r\n"));
+    assert_eq!(follower.render(&mut out).unwrap(), 1);
+    let rendered = String::from_utf8(out).unwrap();
+    assert!(rendered.contains("link down on eth0"));
+    assert!(!rendered.contains("booting"));
+
+    // Queries apply while following too.
+    let mut only_errors = Follower::new(
+        &path,
+        Query {
+            priority: Some(Priority::Err),
+            ..Query::new()
+        },
+        OutputMode::Cat,
+        "aios",
+    )
+    .unwrap();
+    writer.write_line("<6>dhcpd: offer sent");
+    writer.write_line("<3>dhcpd: offer timed out");
+
+    let mut errors = Vec::new();
+    assert_eq!(only_errors.render(&mut errors).unwrap(), 1);
+    assert_eq!(String::from_utf8(errors).unwrap(), "offer timed out\n");
+
+    // What the daemon wrote is still an ordinary journal: one boot, four lines.
+    let store = JournalStore::read_from_path(&path).unwrap();
+    assert_eq!(store.len(), 4);
+    assert_eq!(store.boot_ids().len(), 1);
+    assert_eq!(store.current_boot(), Some(writer.boot_id()));
+
+    // `journalctl -b` on the file selects that boot.
+    let cli = parse_args(args(&["-b"]), 1_792_022_400).unwrap();
+    assert_eq!(store.query(&cli.query).len(), 4);
 
     fs::remove_dir_all(&dir).unwrap();
 }
