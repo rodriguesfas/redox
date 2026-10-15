@@ -1,0 +1,19 @@
+[package]
+name = "logind"
+description = "Login manager (sessions and seats) for Redox"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "logind"
+path = "src/lib.rs"
+
+[[bin]]
+name = "loginctl"
+path = "src/bin/loginctl.rs"
+
+[dependencies]
+journald = { path = "../journald" }
+
+[lints]
+workspace = true

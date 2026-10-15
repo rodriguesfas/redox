@@ -110,6 +110,49 @@ no `/scheme/log` agora cai num journal estruturado em disco.
   linhas novas, juntou registro partido entre dois writes e não vazou metade de registro.
 - [PENDING] boot real (initfs com o `logd` novo + `journalctl -b`/`-f` na máquina) — depende de você.
 
+## 2026-10-15d — #34 logind slice 1/2: sessões/seats + utmp + `loginctl`
+
+Fecha o começo do item **Session/seat management** do DoD. Investigação primeiro:
+`getty` chama `login` (userutils), mas **nada** registra quem está logado; não existe
+`who`/`last` no Redox e o `uptime` do coreutils não lê utmp. Então o plano é: `utmp`
+padrão (compatibilidade) + `loginctl` como consumidor real, e o daemon depois.
+
+- [DONE] `logind/src/utmp.rs` — formato `utmp`/`utmpx` clássico:
+  - registro fixo de **384 bytes** (pid/sessão/timeval 32-bit, little-endian, offsets
+    explícitos) — o mesmo layout do glibc/musl em 32 e 64 bits;
+  - `RecordType` (EMPTY/RUN_LVL/BOOT_TIME/…/USER_PROCESS/DEAD_PROCESS), encode/decode,
+    campos longos truncados com NUL, `ut_id` derivado do terminal (`tty12` → `12`);
+  - `UtmpFile`: leitura tolerante (arquivo ausente = vazio; registro cortado/desconhecido
+    é pulado em vez de esconder o resto), `write_all`, `put` com semântica de `pututline`
+    (substitui pelo terminal; DEAD/EMPTY limpa), `remove`, `append` realinhado (padda
+    cauda rasgada) e `reset`.
+- [DONE] `logind/src/session.rs` — modelo + máquina de estados (puro, host-testável):
+  - `Session` (id, uid, user, seat, tty, type, state, leader, since, host) e `Seat`;
+  - `Sessions::login` (o primeiro login de um seat fica **active**, os demais `online`),
+    `logout` (o seat é repassado ao próximo da fila), `activate` (troca o dono do console
+    sem afetar outros seats), `set_closing`, `active_on`, `seats()`;
+  - `to_utmp`/`from_utmp` (ida e volta pelo arquivo) e `assign_uids` (utmp não guarda uid).
+  - Limitação documentada e coberta por teste: o registro padrão não tem campo de seat/type,
+    então uma visão *só do arquivo* (sem daemon) coloca todo terminal no `seat0`; o daemon
+    guarda o estado exato.
+- [DONE] `logind/src/passwd.rs` — resolve nome → uid lendo `/etc/passwd` (ignora comentário,
+  linha torta e prefixo que case por engano), usado para mostrar UID de verdade.
+- [DONE] `logind/src/cli.rs` + `render.rs` + `bin/loginctl.rs` — CLI no estilo do loginctl:
+  `list-sessions`/`sessions`, `list-seats`/`seats`, `session-status`, `seat-status`,
+  `show-session`, `show-seat`, `--utmp/--file`/`$LOGIND_UTMP`, `-n/--no-legend`,
+  `-h/--help`, `--version`; tabela alinhada, bloco de status e `key=value` para scripts;
+  nome desconhecido vai para o stderr e sai com 1 sem perder o resto da saída.
+- [DONE] **48 testes** no crate (42 unit + 6 integração `tests/pipeline.rs`).
+- [DONE] E2E com o binário real: arquivo `utmp` gerado por uma implementação
+  **independente** (script Python, só o layout padrão) lido pelo `loginctl`:
+  `list-sessions`, `list-seats` (`seat0 1 1 2`), `session-status 1`, `show-session 2`
+  (`Host=example.org`), `seat-status seat0`; `UID=1000` resolvido do `/etc/passwd` do host.
+- [DONE] Empacotado: `BASE_EXTRA_BINS = journalctl loginctl`, `-p journald -p logind`;
+  CI `lab-tests` passa a rodar `logind` também. `/var/run` já existe em `config/base.toml`.
+- [PENDING] slice 2/2: daemon `logind` (dono de `/scheme/logind`), reset do utmp + BOOT_TIME
+  no boot, `logind` avisado pelo `getty`/`login` (sessão real em vez de reconstruída),
+  `wtmp` para um futuro `last`, `loginctl terminate-session`.
+
 ## 2026-10-15b — status: issues de driver fechadas
 
 - Fechadas no tracker `aios-b-612/aios`: #25 (WiFi), #27 (audio), #28 (TRIM), #29 (BT),

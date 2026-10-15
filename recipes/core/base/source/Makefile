@@ -35,9 +35,10 @@ endif
 # BASE_BINS += drawbench
 
 # Installed from packages whose name differs from the binary name.
-# journalctl lives in the journald package together with the logging daemon.
-BASE_EXTRA_BINS = journalctl
-BASE_EXTRA_CARGO_ARGS = -p journald
+# journalctl lives in the journald package together with the logging daemon,
+# and loginctl lives in the logind package together with the login manager.
+BASE_EXTRA_BINS = journalctl loginctl
+BASE_EXTRA_CARGO_ARGS = -p journald -p logind
 
 INITFS_CARGO_ARGS = $(foreach bin,$(INITFS_BINS),-p $(bin))
 INITFS_DRIVERS_CARGO_ARGS = $(foreach bin,$(INITFS_DRIVERS_BINS),-p $(bin))
