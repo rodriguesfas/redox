@@ -312,7 +312,7 @@ impl JournalWriter {
 
         if self.failed_opens >= MAX_IMMEDIATE_ATTEMPTS {
             self.retries = self.retries.wrapping_add(1);
-            if self.retries % RETRY_INTERVAL != 0 {
+            if !self.retries.is_multiple_of(RETRY_INTERVAL) {
                 return false;
             }
         }

@@ -148,7 +148,7 @@ impl Follower {
         let entries = self.tail.read_new(&self.path)?;
         Ok(entries
             .into_iter()
-            .filter(|entry| self.query.matches(&entry))
+            .filter(|entry| self.query.matches(entry))
             .collect())
     }
 
