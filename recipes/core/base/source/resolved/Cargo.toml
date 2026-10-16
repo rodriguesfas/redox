@@ -1,0 +1,21 @@
+[package]
+name = "resolved"
+description = "Resolver configuration (resolved/resolvectl) for Redox"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "resolved"
+path = "src/lib.rs"
+
+[[bin]]
+name = "resolvectl"
+path = "src/bin/resolvectl.rs"
+
+[dependencies]
+# The resolver of the system is read from the network stack, so the contract of
+# `/scheme/netcfg` stays in one crate instead of being written down twice.
+networkd = { path = "../networkd" }
+
+[lints]
+workspace = true

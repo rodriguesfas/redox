@@ -153,6 +153,46 @@ padrão (compatibilidade) + `loginctl` como consumidor real, e o daemon depois.
   no boot, `logind` avisado pelo `getty`/`login` (sessão real em vez de reconstruída),
   `wtmp` para um futuro `last`, `loginctl terminate-session`.
 
+## 2026-10-16b — #34 `resolved` slice 1/2: `/etc/resolv.conf` gerenciado + `resolvectl`
+
+Reordenação decidida: o slice 2/2 do `networkd` (daemon) fica para **depois** deste. Motivo:
+**DNS por nome está quebrado hoje** — nada escreve `/etc/resolv.conf`, e é exatamente esse
+arquivo que a relibc lê (`get_dns_server` pega a **primeira** linha `nameserver ` e nada mais).
+O stack sabe o resolver (o DHCP grava `resolv/nameserver` no netcfg), mas o programa que
+pergunta um nome não tem onde ler. Daemon de boot exige wiring que não dá para testar aqui;
+esta fatia não.
+
+- [DONE] Crate novo `resolved` (workspace member, host-puro, dep só de `networkd`):
+  - `resolv.rs` — `/etc/resolv.conf`: parser **tolerante** + `render` canônico.
+    `nameserver` (vários, ordem preservada; o primeiro é o que a libc usa), `search`/`domain`
+    (mesma lista, a última vence), `options`; ida-e-volta `parse(render(x)) == x`.
+    **Nada é descartado**: linha que não é entendida (diretiva desconhecida, `nameserver`
+    inválido/broadcast/multicast/`0.0.0.0`, endereço a mais na linha) vai para `other` — volta
+    na próxima escrita — e vira **aviso com o número da linha**. Comentário é a única exceção:
+    não é configuração, e o arquivo é gerado com cabeçalho que diz isso.
+  - `state.rs` — `Resolved`: o stack (`Stack::{Resolver,Empty,Unavailable}`, lido de
+    `/scheme/netcfg/resolv/nameserver`) contra o arquivo. `status()`, `conf_for(addr)`,
+    `sync(dry_run)` (stack → arquivo) e `set_dns(addr, dry_run)` (escreve no stack **e** no
+    arquivo, com a **mesma** validação do stack: `is_unicast`). Só reescreve quando os
+    resolvers **mudam**: um arquivo escrito à mão que já concorda é deixado como está.
+    Stack ausente ≠ stack vazio: um é erro, o outro pede `set-dns` primeiro.
+  - `cli.rs` + `render.rs` + `bin/resolvectl.rs` — `status`, `dns [-n]`, `update [--dry-run]`
+    (aliases `sync`/`reload`), `set-dns ADDRESS [--dry-run]`, `--file`/`--netcfg`,
+    `$RESOLVED_FILE`/`$NETWORKD_NETCFG`, `-h`, `--version`. Avisos no **stderr**, inclusive no
+    `update`/`set-dns` (o arquivo que vai ser reescrito é o que foi lido).
+- [DONE] **44 testes** (36 unit + 8 `tests/pipeline.rs`, sempre com o binário real contra um
+  `netcfg` de mentira e arquivos temporários), clippy limpo. O que importa: arquivo inexistente
+  → `update` cria; `search`/`options`/diretiva desconhecida sobrevivem; arquivo que já concorda
+  **não** é reescrito; `--dry-run` não escreve em nenhum dos dois lados; `set-dns` de
+  `0.0.0.0`/broadcast/multicast → erro sem tocar em nada; stack fora do ar aparece no `status`
+  e é erro no `update`; a linha `nameserver` que sobra é a que a relibc lê primeiro.
+- [DONE] Empacotado: `BASE_EXTRA_BINS += resolvectl`, `-p resolved`; CI `lab-tests` roda
+  `resolved`. `cook base` **successful** → `usr/bin/resolvectl` (ELF estático, 341 KB) no stage.
+- [DONE] Suíte host: **549 testes em 18 pacotes** (inclui `resolved` 44).
+- [PENDING] slice 2/2: daemon `resolved` (dono de `/scheme/resolved`), `init.d` depois do
+  `networkd`, e a escrita do arquivo no boot/reagindo a mudança de resolver do `dhcpd`.
+- [PENDING] `networkd` slice 2/2 (adiado): daemon + `init.d` + `10-eth0.network` no image.
+
 ## 2026-10-16a — #34 networkd slice 1/2: config declarativa + `networkctl`
 
 Segue a ordem do #34 (`journald` → `logind` → **`networkd`** → `resolved`). O que existe
@@ -196,10 +236,11 @@ uma ferramenta transforma isso nos writes do netcfg.
 - [DONE] Suíte host: **505 testes em 17 pacotes** (inclui `logind` 78 e `networkd` 59).
 - [PENDING] slice 2/2: daemon `networkd` (dono de `/scheme/networkd`), aplicar no boot e
   reagir a mudanças do netcfg; default `/etc/networkd/10-eth0.network` no image config
-  (hoje: sem arquivo, tudo em DHCP, igual ao boot atual).
-- [PENDING] `resolved` (item seguinte do #34): `/etc/resolv.conf` gerenciado — é o arquivo
-  que a relibc lê (`get_dns_server` lê a primeira linha `nameserver `) e hoje ninguém
-  escreve.
+  (hoje: sem arquivo, tudo em DHCP, igual ao boot atual). **Adiado**: o `resolved` slice 1/2
+  entrou antes (ver `## 2026-10-16b`), porque DNS por nome está quebrado hoje.
+- [DONE] `resolved` slice 1/2 (item seguinte do #34, ver `## 2026-10-16b`): `/etc/resolv.conf`
+  gerenciado — é o arquivo que a relibc lê (`get_dns_server` lê a primeira linha
+  `nameserver `) e até aqui ninguém escrevia.
 
 ## 2026-10-15e — #34 logind slice 2/2: daemon `/scheme/logind` + sessões reais
 
