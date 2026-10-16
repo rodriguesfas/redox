@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use networkd::Ipv4Addr;
 
+use crate::client::{DEFAULT_SCHEME, ENV_SCHEME};
 use crate::state::{ENV_FILE, ENV_NETCFG};
 
 /// Help text.
@@ -24,6 +25,8 @@ Options:
       --file PATH     File to manage (default $RESOLVED_FILE or /etc/resolv.conf)
       --netcfg DIR    Where the network stack is mounted (default
                       $NETWORKD_NETCFG or /scheme/netcfg)
+      --scheme DIR    Where the resolver daemon is mounted (default
+                      $RESOLVED_SCHEME or /scheme/resolved)
       --dry-run       Print the change instead of doing it
   -n, --no-legend     Do not print the column headers
   -h, --help          Show this help
@@ -33,6 +36,10 @@ The network stack holds the resolver the system learned (from DHCP or from a
 `*.network` file); the file is what a program reads. `update` makes the second
 follow the first, `set-dns` decides both. A file that is not there is a system
 where nothing ever wrote a resolver, which is what `update` fixes.
+
+When the resolver daemon is running it is the one that writes, so that the file
+has a single writer; `resolvectl` says so when it answers. A file named on the
+command line is written directly: the daemon manages the file of the system.
 ";
 
 /// The commands of `resolvectl`.
@@ -83,10 +90,16 @@ pub struct Cli {
     pub resolver: Option<Ipv4Addr>,
     /// The file that is managed.
     pub file: PathBuf,
-    /// Whether the file was named on the command line or in the environment.
+    /// Whether the file is the one the command line or the environment named.
     pub file_given: bool,
     /// Where the network stack is mounted.
     pub netcfg: PathBuf,
+    /// Whether the mount point is the one the command line or the environment
+    /// named. The daemon writes to its own mounts, so a mount point that was
+    /// named is never handed to it.
+    pub netcfg_given: bool,
+    /// Where the resolver daemon is mounted.
+    pub scheme: PathBuf,
     /// Whether the change is printed instead of done.
     pub dry_run: bool,
     /// Whether to omit column headers.
@@ -105,6 +118,8 @@ impl Default for Cli {
             file: PathBuf::from(crate::resolv::FILE),
             file_given: false,
             netcfg: PathBuf::from(networkd::DEFAULT_ROOT),
+            netcfg_given: false,
+            scheme: PathBuf::from(crate::client::DEFAULT_SCHEME),
             dry_run: false,
             no_legend: false,
             help: false,
@@ -148,6 +163,14 @@ where
         if let Ok(root) = std::env::var(ENV_NETCFG) {
             if !root.trim().is_empty() {
                 cli.netcfg = PathBuf::from(root);
+                cli.netcfg_given = true;
+            }
+        }
+    }
+    if cli.scheme == std::path::Path::new(DEFAULT_SCHEME) {
+        if let Ok(scheme) = std::env::var(ENV_SCHEME) {
+            if !scheme.trim().is_empty() {
+                cli.scheme = PathBuf::from(scheme);
             }
         }
     }
@@ -208,7 +231,11 @@ where
                         cli.file = PathBuf::from(path(name, value)?);
                         cli.file_given = true;
                     }
-                    "netcfg" => cli.netcfg = PathBuf::from(path(name, value)?),
+                    "netcfg" => {
+                        cli.netcfg = PathBuf::from(path(name, value)?);
+                        cli.netcfg_given = true;
+                    }
+                    "scheme" => cli.scheme = PathBuf::from(path(name, value)?),
                     _ => return err(format!("unknown option --{name}")),
                 }
                 continue;
@@ -285,8 +312,27 @@ mod tests {
         assert_eq!(cli.command, Command::Update);
         assert!(cli.dry_run);
         assert_eq!(cli.file, PathBuf::from(crate::resolv::FILE));
+        assert!(!cli.file_given);
         assert_eq!(cli.netcfg, PathBuf::from(networkd::DEFAULT_ROOT));
+        assert!(!cli.netcfg_given);
+        assert_eq!(cli.scheme, PathBuf::from(DEFAULT_SCHEME));
         assert!(cli.command.is_action());
+    }
+
+    #[test]
+    fn the_daemon_is_not_written_to_when_a_target_was_named() {
+        // The daemon manages the mounts of the system: a command that names a
+        // file or a mount point is about that one, and is answered directly.
+        let cli = parse(&["update"]).unwrap();
+        assert!(!cli.file_given && !cli.netcfg_given);
+        assert!(!cli.dry_run);
+
+        assert!(parse(&["--file", "/tmp/x", "update"]).unwrap().file_given);
+        assert!(
+            parse(&["--netcfg", "/tmp/x", "update"])
+                .unwrap()
+                .netcfg_given
+        );
     }
 
     #[test]
@@ -303,12 +349,15 @@ mod tests {
             "--file=/tmp/resolv.conf",
             "--netcfg",
             "/tmp/netcfg",
+            "--scheme=/tmp/scheme",
             "status",
         ])
         .unwrap();
         assert_eq!(cli.file, PathBuf::from("/tmp/resolv.conf"));
         assert!(cli.file_given);
         assert_eq!(cli.netcfg, PathBuf::from("/tmp/netcfg"));
+        assert!(cli.netcfg_given);
+        assert_eq!(cli.scheme, PathBuf::from("/tmp/scheme"));
     }
 
     #[test]

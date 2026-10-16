@@ -4,6 +4,7 @@
 //! one line a lookup uses, `status` is that line and where it comes from, and
 //! `update` is the file it becomes.
 
+use crate::protocol::Outcome;
 use crate::state::{Status, Sync};
 
 const DNS_COLUMNS: [&str; 2] = ["RESOLVER", "ORIGIN"];
@@ -142,6 +143,35 @@ pub fn render_sync(sync: &Sync, dry_run: bool) -> String {
         sync.path.display(),
         sync.rendered
     )
+}
+
+/// What a write the daemon answered looks like.
+///
+/// The daemon is the one that wrote, and the file it wrote is in the answer:
+/// saying which file it was is what lets a reader notice that the daemon is not
+/// managing the file they asked about.
+pub fn render_delegated(outcome: &Outcome) -> String {
+    if outcome.changed() {
+        format!("wrote {} (the resolver daemon)\n", outcome.path().display())
+    } else {
+        format!(
+            "{}: already in sync (the resolver daemon)\n",
+            outcome.path().display()
+        )
+    }
+}
+
+/// The live report, the way the daemon serves it as the file `status`.
+///
+/// What is wrong with the file is part of the report here, because a reader of
+/// the file has no other place to see it: the warning would otherwise be lost
+/// between the daemon and whoever looks at it.
+pub fn render_status_document(status: &Status) -> String {
+    let mut out = render_status(status);
+    for warning in &status.warnings {
+        out.push_str(&format!("warning: {warning}\n"));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -291,6 +321,34 @@ mod tests {
         assert_eq!(
             render_sync(&sync, false),
             "/etc/resolv.conf: already in sync\n"
+        );
+    }
+
+    #[test]
+    fn a_write_the_daemon_answered_says_the_daemon_did_it() {
+        assert_eq!(
+            render_delegated(&Outcome::new("/etc/resolv.conf", true)),
+            "wrote /etc/resolv.conf (the resolver daemon)\n"
+        );
+        assert_eq!(
+            render_delegated(&Outcome::new("/etc/resolv.conf", false)),
+            "/etc/resolv.conf: already in sync (the resolver daemon)\n"
+        );
+    }
+
+    #[test]
+    fn the_report_the_daemon_serves_carries_the_warnings() {
+        let status = sample(
+            Some("nameserver banana\n"),
+            Stack::Resolver("9.9.9.9".parse().unwrap()),
+        );
+        let report = render_status_document(&status);
+
+        assert!(report.contains("     Stack: 9.9.9.9\n"), "{report}");
+        assert!(report.contains("   In sync: no\n"), "{report}");
+        assert!(
+            report.contains("warning: line 1: nameserver: banana"),
+            "{report}"
         );
     }
 }

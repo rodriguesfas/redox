@@ -1,0 +1,9 @@
+[unit]
+description = "Resolver configuration (/etc/resolv.conf)"
+requires_weak = [
+    "10_smolnetd.service",
+]
+
+[service]
+cmd = "resolved"
+type = { scheme = "resolved" }

@@ -130,6 +130,29 @@ pub struct Resolved {
     netcfg: Netcfg,
 }
 
+/// The state, shared between whoever writes the file.
+///
+/// The daemon writes the file for a request, and its watcher writes it because
+/// the network changed; one writer at a time means a look at the stack taken
+/// before a write cannot overwrite that write afterwards.
+pub type SharedResolved = std::sync::Arc<std::sync::Mutex<Resolved>>;
+
+/// Puts a configuration behind a lock, to be shared.
+pub fn shared(resolved: Resolved) -> SharedResolved {
+    std::sync::Arc::new(std::sync::Mutex::new(resolved))
+}
+
+/// Locks the shared state.
+///
+/// A panic in another thread while the lock was held is not a reason to refuse
+/// to serve the file: what is behind it is a path and a mount point, and the
+/// only cost of a poisoned lock is that the value may be the one before the
+/// write that panicked. Refusing to write a resolver because of that would be
+/// the worse trade.
+pub fn lock(state: &SharedResolved) -> std::sync::MutexGuard<'_, Resolved> {
+    state.lock().unwrap_or_else(|err| err.into_inner())
+}
+
 impl Resolved {
     /// Manages `file`, with the resolver coming from `netcfg`.
     pub fn new(file: impl Into<PathBuf>, netcfg: Netcfg) -> Self {

@@ -153,6 +153,51 @@ padrão (compatibilidade) + `loginctl` como consumidor real, e o daemon depois.
   no boot, `logind` avisado pelo `getty`/`login` (sessão real em vez de reconstruída),
   `wtmp` para um futuro `last`, `loginctl terminate-session`.
 
+## 2026-10-16c — #34 `resolved` slice 2/2: daemon dono de `/scheme/resolved`
+
+Fecha o `resolved`: agora **nada mais precisa lembrar de escrever** `/etc/resolv.conf`. O daemon
+escreve no boot, escreve de novo quando o stack muda (olha a cada 5 s, e na hora quando alguém
+pede), e é o único que escreve — um pedido que chega enquanto a rede muda não corre com outro
+escritor. `init` sobe ele como serviço de scheme, depois do `smolnetd`; rede que ainda não subiu
+**não** é falha (o lease chega depois e o próximo olhar carrega).
+
+- [DONE] `protocol.rs` — protocolo textual *write-then-read* no padrão do `logind`:
+  `sync` (aliases `update`/`reload`), `set-dns ADDRESS` (aliases `set-resolver`); resposta
+  `ok <msg>` / `err <msg>`, com a mensagem saying **qual arquivo** e **se ele mudou**
+  (`wrote /etc/resolv.conf` / `unchanged /etc/resolv.conf`). O caminho vai na resposta porque
+  quem nomeou o próprio arquivo precisa saber se o daemon está falando *daquele* arquivo.
+- [DONE] `service.rs` — `Service`: aplica um pedido ao estado e devolve a mensagem; `status_document()`
+  é o arquivo `status` do scheme (relatório vivo + avisos dentro dele, porque quem lê o arquivo
+  não tem stderr). Recusa vira `err` na linha, nunca silêncio.
+- [DONE] `watch.rs` — `Watcher::look()`: um olhar no stack; `Stack::Empty`/`Unavailable` →
+  `Ok(None)` (é "ainda não", não erro — é para isso que serve vigiar). Estado é
+  `Arc<Mutex<Resolved>>` (`state::shared`/`state::lock`), então o watcher e os pedidos escrevem
+  **um de cada vez**, e um lock envenenado não impede servir o arquivo.
+- [DONE] `client.rs` — lado `resolvectl`: `request_if_mounted()` (`None` = não há daemon; erro =
+  veredito, inclusive recusa, que **não** pode ser engolido), `sync`/`set_dns`/`status_report`,
+  `writes_through_the_daemon(cli)` (dry-run nunca escreve; arquivo/mount point nomeado é do
+  usuário, não do daemon; e a resposta tem de ser sobre o **mesmo** arquivo).
+- [DONE] `scheme.rs` + `bin/resolved.rs` + `init.d/10_resolved.service` — scheme com `status`
+  (leitura, snapshot na abertura) e os controles `sync`/`set-dns`; daemon faz o primeiro olhar
+  **antes** de anunciar o serviço, e o loop de vigia só existe se `RESOLVED_INTERVAL` ≠ 0
+  (padrão 5 s; valor inválido é reportado e cai no padrão).
+- [DONE] `resolvectl update`/`set-dns` passam pelo daemon quando ele é o dono do arquivo do
+  sistema, e dizem `(the resolver daemon)` — caso contrário escrevem direto, como antes.
+- [DONE] **72 testes** em `resolved` (58 unit + 6 `tests/daemon.rs` + 8 `tests/pipeline.rs`),
+  clippy limpo. O e2e do daemon cobre: nada a escrever no boot → lease chega → o watcher escreve
+  a **primeira** linha `nameserver` que a relibc lê; pedido via wire (socket pair, resposta
+  termina quando a scheme devolve EOF); `set-dns` recusado (`0.0.0.0`) sem tocar em nada;
+  pedido malformado → `err unknown request`; arquivo que já concorda **não** é reescrito; e o
+  `resolvectl` **real** lendo o arquivo que o daemon escreveu (`In sync: yes`).
+- [DONE] Empacotado: `BASE_EXTRA_BINS += resolved` (daemon instalado junto do `resolvectl`),
+  `10_resolved.service` no `init.d`. `cook base` **successful** → `usr/bin/resolved`
+  (ELF estático, 419 KB) + `usr/lib/init.d/10_resolved.service` no stage. Iteração redox agora
+  tem caminho rápido: `cookbook_redoxer build --release --target-dir <build> -p resolved` (5 s).
+- [DONE] Suíte host: **577 testes em 18 pacotes** (`resolved` 44 → 72).
+- [PENDING] smoke/boot real (`harddrive.img` no Acer) para ver o serviço subindo e o arquivo
+  aparecendo depois do lease — depende do usuário.
+- [PENDING] `networkd` slice 2/2 (adiado): daemon + `init.d` + `10-eth0.network` no image.
+
 ## 2026-10-16b — #34 `resolved` slice 1/2: `/etc/resolv.conf` gerenciado + `resolvectl`
 
 Reordenação decidida: o slice 2/2 do `networkd` (daemon) fica para **depois** deste. Motivo:

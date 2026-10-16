@@ -9,6 +9,10 @@ name = "resolved"
 path = "src/lib.rs"
 
 [[bin]]
+name = "resolved"
+path = "src/bin/resolved.rs"
+
+[[bin]]
 name = "resolvectl"
 path = "src/bin/resolvectl.rs"
 
@@ -16,6 +20,15 @@ path = "src/bin/resolvectl.rs"
 # The resolver of the system is read from the network stack, so the contract of
 # `/scheme/netcfg` stays in one crate instead of being written down twice.
 networkd = { path = "../networkd" }
+
+# The daemon serves the state at `/scheme/resolved`; the host build is only
+# there to test the logic, so the Redox half is compiled where it runs.
+[target.'cfg(target_os = "redox")'.dependencies]
+daemon = { path = "../daemon" }
+libredox.workspace = true
+redox-scheme.workspace = true
+redox_syscall.workspace = true
+scheme-utils = { path = "../scheme-utils" }
 
 [lints]
 workspace = true
