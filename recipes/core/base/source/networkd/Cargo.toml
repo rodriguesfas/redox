@@ -9,8 +9,21 @@ name = "networkd"
 path = "src/lib.rs"
 
 [[bin]]
+name = "networkd"
+path = "src/bin/networkd.rs"
+
+[[bin]]
 name = "networkctl"
 path = "src/bin/networkctl.rs"
+
+# The daemon serves the state at `/scheme/networkd`; the host build is only
+# there to test the logic, so the Redox half is compiled where it runs.
+[target.'cfg(target_os = "redox")'.dependencies]
+daemon = { path = "../daemon" }
+libredox.workspace = true
+redox-scheme.workspace = true
+redox_syscall.workspace = true
+scheme-utils = { path = "../scheme-utils" }
 
 [lints]
 workspace = true

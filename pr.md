@@ -153,6 +153,62 @@ padrão (compatibilidade) + `loginctl` como consumidor real, e o daemon depois.
   no boot, `logind` avisado pelo `getty`/`login` (sessão real em vez de reconstruída),
   `wtmp` para um futuro `last`, `loginctl terminate-session`.
 
+## 2026-10-16d — #34 `networkd` slice 2/2: daemon dono de `/scheme/networkd`
+
+Fecha o `networkd` — e com ele o eixo de init/userspace do #34 (journald ✅, logind ✅, resolved ✅,
+networkd ✅). A configuração declarativa do slice 1 agora é aplicada por alguém: o daemon aplica no
+boot, aplica de novo quando a configuração ou as interfaces mudam (olha a cada 5 s, e na hora quando
+alguém pede), e é o **único** escritor do stack — `networkctl apply` passa a pedir para ele.
+`10-eth0.network` entra no image config: o DHCP de hoje vira um arquivo em vez de ser implícito.
+
+- [DONE] `state.rs` — `Networkd`: configuração e stack juntos. `plan()` lê os `*.network` e observa
+  as interfaces; `apply()` escreve e **lembra o que aplicou** (as writes do plano), então um plano
+  que diz a mesma coisa é respondido com "unchanged" em vez de empurrar a mesma mudança para o
+  stack a cada olhar. Plano sem writes (DHCP puro) não escreve nada — é o comportamento de hoje, e
+  um plano meio aplicado (o stack recusou uma write no meio) **não** é lembrado como pronto.
+  Estado é `Arc<Mutex<Networkd>>` (`shared`/`lock`): watcher e pedidos aplicam um de cada vez, e
+  um lock envenenado não impede configurar.
+- [DONE] `protocol.rs` — textual *write-then-read* no padrão do `logind`/`resolved`: `apply`
+  (aliases `sync`/`reload`/`update`) → `ok applied <n> <netcfg>\t<config>` /
+  `ok unchanged <netcfg>\t<config>` / `err <msg>`. Os **dois** caminhos vão na resposta — e em TAB,
+  porque um caminho pode conter espaço: quem nomeou o próprio diretório precisa saber se o daemon
+  está falando do mesmo.
+- [DONE] `service.rs` — `Service::handle()` aplica um pedido e devolve a linha que o cliente lê;
+  `status_document()` é o arquivo `status` do scheme (relatório vivo + avisos + `applied: yes|no`,
+  porque quem lê o arquivo não tem stderr). Recusa vira `err` na linha, nunca silêncio.
+- [DONE] `watch.rs` — `Watcher::look()`; stack **não montado** (`Netcfg::is_mounted()`, novo) →
+  `Ok(None)`: a rede sobe depois deste daemon, e é para isso que serve vigiar. `NETWORKD_INTERVAL`
+  segue o mesmo contrato do `resolved` (segundos; `0` desliga; inválido reporta e usa 5 s), para os
+  dois daemons do boot serem configurados nas mesmas palavras.
+- [DONE] `client.rs` — lado `networkctl`: `request_if_mounted()` (`None` = não há daemon; erro =
+  veredito, inclusive recusa, que **não** pode ser engolido), `apply`/`status_report`,
+  `writes_through_the_daemon(cli)` (dry-run nunca escreve; `--config-dir`/`--netcfg` nomeados são
+  do usuário, não do daemon).
+- [DONE] `scheme.rs` + `bin/networkd.rs` + `init.d/10_networkd.service` (e `10_net.target` passa a
+  exigi-lo) — scheme com `status` (leitura, snapshot na abertura) e o controle `apply`; o daemon
+  faz o primeiro olhar **antes** de anunciar o serviço, e o loop de vigia só existe se
+  `NETWORKD_INTERVAL` ≠ 0.
+- [DONE] `networkctl apply` pede ao daemon quando ele é o dono do stack e a resposta é sobre o
+  **mesmo par** (`describes(netcfg, config)`), imprimindo
+  `applied N writes to /scheme/netcfg (the network daemon)`; sem daemon (shell de resgate) escreve
+  direto, como antes.
+- [DONE] Image config: `/etc/networkd/10-eth0.network` (`[Match] Name=eth0` + `[Network] DHCP=yes`)
+  no `config/base.toml` — o DHCP de hoje declarado, e o arquivo que o daemon lê no boot.
+- [DONE] **95 testes** em `networkd` (81 unit + 6 `tests/daemon.rs` + 8 `tests/pipeline.rs`),
+  fmt/clippy limpos. Novos: `protocol` 7, `client` 6, `state` 7, `service` 4, `watch` 3,
+  `render` 2, `daemon` 6. O e2e cobre: primeiro olhar aplica endereço+rota, segundo não escreve
+  nada, configuração editada é carregada; pedido via wire (socket pair) e o `unchanged` do pedido
+  repetido; `DHCP=yes` não escreve nada; stack ausente → o watcher espera, o pedido é recusado com
+  `cannot read the interfaces`; pedido malformado → `err unknown request`; e `networkctl` real com
+  os caminhos nomeados **não** pergunta ao daemon (escreve no stack que lhe foi dado).
+- [DONE] Empacotado: `BASE_EXTRA_BINS += networkd`; `cook base` **successful** → `usr/bin/networkd`
+  (ELF estático, 460 KB) + `usr/lib/init.d/10_networkd.service` no stage.
+- [DONE] Suíte host: **613 testes em 18 pacotes** (`networkd` 59 → 95), sem regressão (`resolved`
+  segue 72; `journald` 115, `logind` 78).
+- [PENDING] smoke/boot real (`harddrive.img` no Acer): `init` subindo `10_networkd.service` e o
+  daemon aplicando (ou não, se o arquivo só disser DHCP) — depende do usuário.
+- [PENDING] #34 ainda tem: systemd-boot/OTA, cgroups, e o resto do checklist da issue.
+
 ## 2026-10-16c — #34 `resolved` slice 2/2: daemon dono de `/scheme/resolved`
 
 Fecha o `resolved`: agora **nada mais precisa lembrar de escrever** `/etc/resolv.conf`. O daemon

@@ -71,6 +71,15 @@ impl Netcfg {
         Path::new(self.root.trim_end_matches('/')).join(path)
     }
 
+    /// Whether the stack is mounted at all.
+    ///
+    /// A stack that is not there yet is not a stack with no interfaces: at boot
+    /// the network comes up after the daemons that use it, and a daemon that
+    /// cannot tell the two apart can only fail where it should wait.
+    pub fn is_mounted(&self) -> bool {
+        self.path("ifaces").is_dir()
+    }
+
     /// The interfaces the stack serves.
     ///
     /// The name of an interface is the name of its directory; its hardware
@@ -210,6 +219,20 @@ mod tests {
         let netcfg = Netcfg::new(scratch("missing").to_string_lossy().into_owned());
         let error = netcfg.interfaces().unwrap_err();
         assert!(error.0.contains("cannot read the interfaces"), "{error}");
+    }
+
+    #[test]
+    fn a_stack_that_is_not_mounted_is_not_a_stack_without_interfaces() {
+        let netcfg = Netcfg::new(scratch("unmounted").to_string_lossy().into_owned());
+        assert!(!netcfg.is_mounted(), "nothing is served there yet");
+        assert!(netcfg.interfaces().is_err(), "and reading it is an error");
+
+        // An empty stack is mounted: it serves `ifaces` and has nothing in it.
+        let (dir, netcfg) = netcfg_with_eth0("mounted");
+        assert!(netcfg.is_mounted());
+        assert_eq!(netcfg.interfaces().unwrap().len(), 1);
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

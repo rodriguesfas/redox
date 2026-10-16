@@ -3,6 +3,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use crate::client::{DEFAULT_SCHEME, ENV_SCHEME};
 use crate::config::CONFIG_DIR;
 use crate::netcfg::{DEFAULT_ROOT, ENV_ROOT};
 
@@ -27,6 +28,8 @@ Options:
                           $NETWORKD_CONFIG or /etc/networkd)
       --netcfg DIR        Where the network stack is mounted (default
                           $NETWORKD_NETCFG or /scheme/netcfg)
+      --scheme DIR        Where the network daemon is mounted (default
+                          $NETWORKD_SCHEME or /scheme/networkd)
       --dry-run           Print the writes instead of applying them
   -n, --no-legend         Do not print the column headers
   -h, --help              Show this help
@@ -91,6 +94,11 @@ pub struct Cli {
     pub config_dir_given: bool,
     /// Where the network stack is mounted.
     pub netcfg: PathBuf,
+    /// Whether the network stack was named on the command line or in the
+    /// environment.
+    pub netcfg_given: bool,
+    /// Where the network daemon is mounted.
+    pub scheme: PathBuf,
     /// Whether the writes are printed instead of applied.
     pub dry_run: bool,
     /// Whether to omit column headers.
@@ -109,6 +117,8 @@ impl Default for Cli {
             config_dir: PathBuf::from(CONFIG_DIR),
             config_dir_given: false,
             netcfg: PathBuf::from(DEFAULT_ROOT),
+            netcfg_given: false,
+            scheme: PathBuf::from(crate::client::DEFAULT_SCHEME),
             dry_run: false,
             no_legend: false,
             help: false,
@@ -152,6 +162,14 @@ where
         if let Ok(root) = std::env::var(ENV_ROOT) {
             if !root.trim().is_empty() {
                 cli.netcfg = PathBuf::from(root);
+                cli.netcfg_given = true;
+            }
+        }
+    }
+    if cli.scheme == std::path::Path::new(DEFAULT_SCHEME) {
+        if let Ok(scheme) = std::env::var(ENV_SCHEME) {
+            if !scheme.trim().is_empty() {
+                cli.scheme = PathBuf::from(scheme);
             }
         }
     }
@@ -214,7 +232,11 @@ where
                         cli.config_dir = PathBuf::from(path(name, value)?);
                         cli.config_dir_given = true;
                     }
-                    "netcfg" => cli.netcfg = PathBuf::from(path(name, value)?),
+                    "netcfg" => {
+                        cli.netcfg = PathBuf::from(path(name, value)?);
+                        cli.netcfg_given = true;
+                    }
+                    "scheme" => cli.scheme = PathBuf::from(path(name, value)?),
                     _ => return err(format!("unknown option --{name}")),
                 }
                 continue;
@@ -292,6 +314,8 @@ mod tests {
         assert!(cli.no_legend);
         assert_eq!(cli.config_dir, PathBuf::from(CONFIG_DIR));
         assert_eq!(cli.netcfg, PathBuf::from(DEFAULT_ROOT));
+        assert_eq!(cli.scheme, PathBuf::from(DEFAULT_SCHEME));
+        assert!(!cli.config_dir_given && !cli.netcfg_given);
     }
 
     #[test]
@@ -306,10 +330,20 @@ mod tests {
 
     #[test]
     fn the_paths_can_be_named_two_ways() {
-        let cli = parse(&["--config-dir=/tmp/conf", "--netcfg", "/tmp/netcfg", "show"]).unwrap();
+        let cli = parse(&[
+            "--config-dir=/tmp/conf",
+            "--netcfg",
+            "/tmp/netcfg",
+            "--scheme",
+            "/tmp/scheme",
+            "show",
+        ])
+        .unwrap();
         assert_eq!(cli.config_dir, PathBuf::from("/tmp/conf"));
         assert!(cli.config_dir_given);
         assert_eq!(cli.netcfg, PathBuf::from("/tmp/netcfg"));
+        assert!(cli.netcfg_given);
+        assert_eq!(cli.scheme, PathBuf::from("/tmp/scheme"));
     }
 
     #[test]

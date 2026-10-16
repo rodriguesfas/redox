@@ -92,6 +92,19 @@ data = """
 255.255.255.0
 """
 
+## Network configuration: one `*.network` file per interface, read by `networkd`.
+## This is what the system does today written down: the interface is left to
+## DHCP, so the address, the route and the resolver arrive with the lease.
+[[files]]
+path = "/etc/networkd/10-eth0.network"
+data = """
+[Match]
+Name=eth0
+
+[Network]
+DHCP=yes
+"""
+
 # https://www.freedesktop.org/software/systemd/man/latest/os-release.html
 [[files]]
 path = "/usr/lib/os-release"

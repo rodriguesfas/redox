@@ -38,9 +38,9 @@ endif
 # login manager, the network manager and the resolver, whose tools and daemons
 # live in the same package as the libraries.
 # journalctl lives in the journald package together with the logging daemon,
-# loginctl and logind in the logind package, networkctl in networkd, and
-# resolvectl and resolved in the resolved package.
-BASE_EXTRA_BINS = journalctl loginctl logind networkctl resolvectl resolved
+# loginctl and logind in the logind package, networkctl and networkd in the
+# networkd package, and resolvectl and resolved in the resolved package.
+BASE_EXTRA_BINS = journalctl loginctl logind networkctl networkd resolvectl resolved
 BASE_EXTRA_CARGO_ARGS = -p journald -p logind -p networkd -p resolved
 
 INITFS_CARGO_ARGS = $(foreach bin,$(INITFS_BINS),-p $(bin))

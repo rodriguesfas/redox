@@ -8,14 +8,23 @@
 //!
 //! Nothing is written unless asked: a boot with no configuration is a boot
 //! where every interface is left to DHCP, which is what the system does today.
+//!
+//! The write itself belongs to the daemon `networkd` when it is running, and
+//! this tool asks it: one writer means a plan read before a write cannot be
+//! applied after it. A system without the daemon — a rescue shell — is written
+//! by the tool, the way it was before there was a daemon.
 
 use std::process::ExitCode;
 
 use networkd::cli::parse_env_args;
+use networkd::client::Client;
 use networkd::config::{Config, NetworkFile};
 use networkd::netcfg::Netcfg;
 use networkd::plan::Plan;
-use networkd::render::{render_applied, render_config, render_interfaces, render_status};
+use networkd::protocol::{Outcome, Request};
+use networkd::render::{
+    render_applied, render_config, render_delegated, render_interfaces, render_status,
+};
 use networkd::{Command, USAGE};
 
 fn main() -> ExitCode {
@@ -85,8 +94,15 @@ fn run(cli: &networkd::Cli) -> Result<(), String> {
         Command::Apply => {
             let plan = build_plan(cli)?;
             let netcfg = Netcfg::new(cli.netcfg.to_string_lossy().into_owned());
-            let writes = plan.writes();
             report_warnings(&plan.warnings);
+
+            // The daemon owns the write when it is running.
+            if let Some(outcome) = ask_the_daemon(cli)? {
+                print!("{}", render_delegated(&outcome));
+                return Ok(());
+            }
+
+            let writes = plan.writes();
 
             if writes.is_empty() {
                 println!("networkctl: nothing to apply");
@@ -129,6 +145,33 @@ fn build_plan(cli: &networkd::Cli) -> Result<Plan, String> {
     let observed = netcfg.interfaces().map_err(|err| err.0)?;
 
     Ok(Plan::build(&config, &observed))
+}
+
+/// Asks the daemon when it is the one that writes.
+///
+/// A dry run never writes, so it never asks; and a command that named a
+/// configuration directory or a mount point of its own is about that one, so it
+/// is answered here. The daemon also has to be talking about the same two: a
+/// daemon that answers about another stack or another configuration is a daemon
+/// for another system, and its answer is not ours to print.
+fn ask_the_daemon(cli: &networkd::Cli) -> Result<Option<Outcome>, String> {
+    if !networkd::client::writes_through_the_daemon(cli) {
+        return Ok(None);
+    }
+
+    match Client::new(cli.scheme.clone()).request_if_mounted(&Request::Apply) {
+        None => Ok(None),
+        Some(Err(err)) => Err(err.to_string()),
+        Some(Ok(outcome)) => {
+            if outcome.describes(&cli.netcfg, &cli.config_dir) {
+                Ok(Some(outcome))
+            } else {
+                // The daemon manages a configuration of its own: this command is
+                // about another one, and the tool writes it.
+                Ok(None)
+            }
+        }
+    }
 }
 
 fn report_warnings(warnings: &[String]) {

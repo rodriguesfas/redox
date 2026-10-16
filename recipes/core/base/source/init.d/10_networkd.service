@@ -1,0 +1,9 @@
+[unit]
+description = "Network configuration (/scheme/netcfg)"
+requires_weak = [
+    "10_smolnetd.service",
+]
+
+[service]
+cmd = "networkd"
+type = { scheme = "networkd" }

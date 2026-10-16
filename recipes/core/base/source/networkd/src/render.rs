@@ -6,6 +6,7 @@
 
 use crate::config::Config;
 use crate::plan::{InterfacePlan, Plan};
+use crate::protocol::Outcome;
 
 const INTERFACE_COLUMNS: [&str; 5] = ["INTERFACE", "MODE", "ADDRESS", "GATEWAY", "DNS"];
 
@@ -166,6 +167,47 @@ pub fn render_applied(applied: &[String]) -> String {
     out
 }
 
+/// What an application the daemon answered looks like.
+///
+/// The daemon is the one that wrote, and the stack it wrote is in the answer:
+/// saying which stack it was is what lets a reader notice that the daemon is not
+/// managing the stack they asked about.
+pub fn render_delegated(outcome: &Outcome) -> String {
+    match outcome {
+        Outcome::Applied { writes, netcfg, .. } => format!(
+            "applied {writes} {} to {} (the network daemon)\n",
+            if *writes == 1 { "write" } else { "writes" },
+            netcfg.display()
+        ),
+        Outcome::Unchanged { netcfg, .. } => format!(
+            "{}: nothing to write (the network daemon)\n",
+            netcfg.display()
+        ),
+    }
+}
+
+/// The live report, the way the daemon serves it as the file `status`.
+///
+/// What is wrong with the configuration is part of the report here, because a
+/// reader of the file has no other place to see it: a warning would otherwise be
+/// lost between the daemon and whoever looks at it. Whether the configuration
+/// has already been written to the stack is part of it for the same reason.
+pub fn render_status_document(plan: &Plan, netcfg_root: &str, applied: bool) -> String {
+    let mut out = render_status(plan, None, netcfg_root);
+
+    for warning in &plan.warnings {
+        out.push_str(&format!("warning: {warning}\n"));
+    }
+
+    out.push_str(if applied {
+        "applied: yes\n"
+    } else {
+        "applied: no\n"
+    });
+
+    out
+}
+
 /// A one line summary of an interface, for the last line of a status.
 pub fn summarize(iface: &InterfacePlan) -> String {
     format!(
@@ -302,5 +344,50 @@ mod tests {
             summarize(&plan.interfaces[0]),
             "eth0: static (1 addresses, 1 routes, 1 resolvers)"
         );
+    }
+
+    #[test]
+    fn a_write_the_daemon_answered_says_which_stack_it_wrote() {
+        let applied = |writes| Outcome::Applied {
+            writes,
+            netcfg: "/scheme/netcfg".into(),
+            config: "/etc/networkd".into(),
+        };
+
+        assert_eq!(
+            render_delegated(&applied(1)),
+            "applied 1 write to /scheme/netcfg (the network daemon)\n"
+        );
+        assert_eq!(
+            render_delegated(&applied(3)),
+            "applied 3 writes to /scheme/netcfg (the network daemon)\n"
+        );
+
+        let unchanged = Outcome::Unchanged {
+            netcfg: "/scheme/netcfg".into(),
+            config: "/etc/networkd".into(),
+        };
+        assert_eq!(
+            render_delegated(&unchanged),
+            "/scheme/netcfg: nothing to write (the network daemon)\n"
+        );
+    }
+
+    #[test]
+    fn the_report_the_daemon_serves_carries_what_is_wrong_with_it() {
+        // Only `wlan0` is configured, so `eth0` is worth a warning: a reader of
+        // the report has no other place to see it.
+        let plan = plan("[Match]\nName=wlan0\n\n[Network]\nDHCP=yes\n");
+
+        let report = render_status_document(&plan, "/scheme/netcfg", false);
+        assert!(report.contains("wlan0: dhcp, from"), "{report}");
+        assert!(
+            report.contains("warning: eth0: no configuration matches, using DHCP\n"),
+            "{report}"
+        );
+        assert!(report.ends_with("applied: no\n"), "{report}");
+
+        let report = render_status_document(&plan, "/scheme/netcfg", true);
+        assert!(report.ends_with("applied: yes\n"), "{report}");
     }
 }
