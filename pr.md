@@ -208,6 +208,47 @@ qualquer coisa, e a resposta e a configuracao, nao a sorte.
 - [PENDING] `networkctl apply` ainda monta o plano (le o stack) antes de poder delegar; e #34
   segue com systemd-boot/OTA e cgroups.
 
+## 2026-10-16f — #11 teclado BR-ABNT2 no `inputd` (dead keys + a tecla `/ ?`)
+
+Fecha o item "Keymap BR-ABNT2" da #11 (libinput/gestos/Fn/touchpad continuam fora, precisam de
+hardware). O `inputd` só tinha US/GB/Dvorak/Azerty/Bepo/IT e nenhuma dead key; a tabela foi
+escrita do keymap de console (`br-abnt2.map`, keycodes = evdev = set-1 = domínio do orbclient) e
+do HID (`International1` = `/ ?` do Brasil, hut1_21 nota 16).
+
+- [DONE] `keymaps::ABNT2` (55 entradas): `ç`/`Ç` na `;`, `´`/`` ` `` na `[`, `~`/`^` na `'`,
+  `'`/`"` na top-left, `]`/`}` na `\|`, `;`/`:` na `/`, `¨` no shift+6, mais a tecla 102ND
+  (`\ |`, código 0x56, como o GB) e a `/ ?` (código 0x59, livre no orbclient).
+- [DONE] `KeymapKind::Abnt2` no fim do enum (números do protocolo `activate_keymap`
+  preservados); `FromStr` aceita `br-abnt2`/`abnt2`, `Display` imprime `br-abnt2`,
+  `KeymapKind::ALL` faz o `--keymaps` se listar (antes era lista escrita à mão).
+- [DONE] dead keys (`´` `` ` `` `~` `^` `¨`): `KeymapData::type_key` (press) espera a próxima
+  tecla e compõe (`´a`->`á`, `~o`->`õ`, `^e`->`ê`, `` `u ``->`ù`, `¨o`->`ö`, maiúsculas
+  incluídas). Sem composição a dead key é impressa antes do que foi digitado (`´b`->`´b`,
+  `` ` ``+espaço->`` ` `` e espaço); tecla que não imprime nada (Enter, seta) deixa a dead key
+  para trás. Releases seguem a tabela pura.
+- [DONE] `inputd::write` monta um `Vec<Event>` (uma tecla vira dois eventos quando a dead key
+  não compõe; antes o buffer era fixo) e o resto do pipeline não mudou.
+- [DONE] drivers: `usbhidd` reporta a `/ ?` (usage 0x87) como 0x59 e a 102ND (usage 0x64) como
+  0x56 (era `K_APP`, que no ps2d é o menu E0 5D); `ps2d` reporta 0x73 como 0x59 (antes caía no
+  "unknown scancode"). Nenhum dos dois caminhos reportava a `/ ?` — a tecla não fazia nada.
+- Testes: inputd **6 testes de host** (tabela, composição, espera, outros layouts, nomes);
+  suíte local **638 em 20 pacotes, 0 falhas** (632 + 6; journald 115, logind 78, networkd 110,
+  resolved 72, dhcpd 4 sem regressão). fmt limpo; clippy do inputd só com os 2 avisos
+  pré-existentes.
+- Redox: `cookbook_redoxer build -p inputd -p ps2d -p usbhidd` ok; `cook base` **successful** ->
+  stage com `usr/bin/inputd` (contendo `br-abnt2`) e `usr/lib/drivers/usbhidd` atualizado.
+  `ps2d` é `INITFS_BINS` (compila no `make base`; o `initfs.img` é o alvo `initfs`, fora do
+  `cook base`).
+- CI `lab-tests`: PKGS ganhou `inputd` + passo `libsdl2-dev` (o orbclient linka SDL2 no host);
+  run `38950775194` **verde**.
+- Commits: `28cdb79ec` (inputd) e `ba0861c8e` (drivers), push em `fork` + `backup`.
+- [PENDING] validar com teclado ABNT2 real (smoke de boot): `/ ?` (0x59) e a 102ND (0x56) no
+  USB/PS2, e a composição no console (fbcond)/Orbital. O default do boot segue US
+  (`inputd -K br-abnt2` troca; não há config persistente).
+- [PENDING] critério `localectl set-keymap br-abnt2` da issue: não existe `localectl` na
+  árvore (o runtime é `inputd -K br-abnt2`, mesmo `ControlHandle::activate_keymap`); um
+  `localectl` + layout persistente no boot é candidato de próximo slice.
+
 ## 2026-10-16d — #34 `networkd` slice 2/2: daemon dono de `/scheme/networkd`
 
 Fecha o `networkd` — e com ele o eixo de init/userspace do #34 (journald ✅, logind ✅, resolved ✅,
