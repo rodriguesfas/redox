@@ -9,11 +9,25 @@ name = "logind"
 path = "src/lib.rs"
 
 [[bin]]
+name = "logind"
+path = "src/bin/logind.rs"
+
+[[bin]]
 name = "loginctl"
 path = "src/bin/loginctl.rs"
 
 [dependencies]
 journald = { path = "../journald" }
+
+# The daemon talks to the kernel and to the rest of the boot; the host build is
+# only there to test the logic, so the Redox half is compiled where it runs.
+[target.'cfg(target_os = "redox")'.dependencies]
+daemon = { path = "../daemon" }
+libc.workspace = true
+libredox.workspace = true
+redox-scheme.workspace = true
+redox_syscall.workspace = true
+scheme-utils = { path = "../scheme-utils" }
 
 [lints]
 workspace = true

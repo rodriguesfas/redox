@@ -1,18 +1,19 @@
-//! `loginctl`: inspect the sessions and seats recorded by `logind`.
+//! `loginctl`: inspect and control the sessions and seats of `logind`.
 //!
-//! Without a running daemon the state comes from the login record file
-//! (`/var/run/utmp`), which `logind` keeps up to date, so the tool is useful
-//! from the first boot line — and from a rescue shell.
+//! Reads come from the running login manager when it answers, and from the
+//! record file (`/var/run/utmp`) otherwise — the file is kept up to date by the
+//! daemon, so a listing works from a rescue shell, before the daemon starts, or
+//! on a system that does not run it at all. Stopping a session needs the
+//! daemon: a session is a live process, not a line in a file.
 
 use std::process::ExitCode;
 
 use logind::cli::{parse_env_args, USAGE};
-use logind::passwd::lookup_uid;
+use logind::client::Client;
 use logind::render::{
     render_seat_status, render_seats, render_session_status, render_sessions, render_show_seat,
     render_show_session, unknown_target,
 };
-use logind::session::Sessions;
 use logind::utmp::UtmpFile;
 use logind::Command;
 
@@ -38,21 +39,62 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let records = match UtmpFile::new(cli.utmp.clone()).read_all() {
-        Ok(records) => records,
-        Err(err) => {
-            eprintln!("loginctl: cannot read {}: {err}", cli.utmp.display());
-            return ExitCode::FAILURE;
-        }
-    };
-
-    // `utmp` has no user id, so names are resolved again from the account
-    // database to make the listings readable.
-    let mut sessions = Sessions::from_utmp(&records);
-    sessions.assign_uids(lookup_uid);
+    let client = Client::new(cli.scheme.clone());
+    let utmp = UtmpFile::new(cli.utmp.clone());
 
     let mut out = String::new();
     let mut failed = false;
+
+    // Control verbs are sent to the daemon and nothing else is needed: the
+    // record file cannot stop a process.
+    if cli.command.is_action() {
+        for target in &cli.targets {
+            let result = if cli.command == Command::TerminateSession {
+                client.terminate(target)
+            } else {
+                client.activate(target)
+            };
+
+            match result {
+                Ok(id) => out.push_str(&format!("{target} -> {id}\n")),
+                Err(err) => {
+                    eprintln!("loginctl: {target}: {err}");
+                    failed = true;
+                }
+            }
+        }
+
+        print!("{out}");
+        return if failed {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
+
+    // A named file is read as it is; otherwise the live view of the daemon is
+    // preferred, with the file as the fallback.
+    let sessions = if cli.utmp_given {
+        match logind::client::file_sessions(&utmp) {
+            Ok(sessions) => sessions,
+            Err(err) => {
+                eprintln!("loginctl: cannot read {}: {err}", cli.utmp.display());
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        match client.sessions_or_file(&utmp) {
+            Ok((sessions, _origin)) => sessions,
+            Err(err) => {
+                eprintln!(
+                    "loginctl: no session source: {} and {}: {err}",
+                    client.scheme().display(),
+                    cli.utmp.display()
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+    };
 
     match cli.command {
         Command::ListSessions => {
@@ -110,6 +152,8 @@ fn main() -> ExitCode {
             eprintln!("loginctl: no command given");
             return ExitCode::FAILURE;
         }
+        // Handled above, before anything is read.
+        Command::TerminateSession | Command::ActivateSession => unreachable!(),
     }
 
     print!("{out}");

@@ -1,0 +1,6 @@
+[unit]
+description = "Login manager (sessions and seats)"
+
+[service]
+cmd = "logind"
+type = { scheme = "logind" }

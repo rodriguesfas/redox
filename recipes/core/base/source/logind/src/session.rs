@@ -17,6 +17,9 @@ use crate::utmp::{UtmpRecord, DEFAULT_PATH};
 /// Default seat, used for local terminals.
 pub const DEFAULT_SEAT: &str = "seat0";
 
+/// Number of fields in a session record served by the daemon.
+pub const RECORD_FIELDS: usize = 10;
+
 /// How a session is connected.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Hash)]
 pub enum SessionType {
@@ -239,6 +242,36 @@ impl Seat {
     }
 }
 
+/// Returned when a session record served by the daemon cannot be understood.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordError(pub String);
+
+impl fmt::Display for RecordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid session record: {}", self.0)
+    }
+}
+
+impl std::error::Error for RecordError {}
+
+/// One field of a record: the separators cannot appear inside a value.
+fn field(value: &str) -> String {
+    value.replace(['\t', '\n', '\r'], " ")
+}
+
+fn number_field<T: std::str::FromStr>(
+    value: &str,
+    name: &str,
+    line: usize,
+) -> Result<T, RecordError>
+where
+    T::Err: fmt::Display,
+{
+    value
+        .parse()
+        .map_err(|_| RecordError(format!("line {}: invalid {name} {value:?}", line + 1)))
+}
+
 /// Every session on the system.
 #[derive(Clone, Debug, Default)]
 pub struct Sessions {
@@ -316,15 +349,21 @@ impl Sessions {
 
     /// Removes a session, returning it.
     ///
-    /// When the removed session was active, the newest remaining session on the
-    /// seat takes over, so a seat is never left without an active session while
-    /// somebody is still logged in.
+    /// When the seat is left without an active session, the newest remaining
+    /// session on it takes over, so a seat is never left without an active
+    /// session while somebody is still logged in. That includes the session that
+    /// was just asked to stop: it is no longer active by the time it ends, and
+    /// the seat still has to be handed over.
     pub fn logout(&mut self, id: &str) -> Option<Session> {
         let index = self.sessions.iter().position(|session| session.id == id)?;
         let removed = self.sessions.remove(index);
 
-        if removed.is_active() {
-            let seat = removed.seat.clone();
+        let seat = removed.seat.clone();
+        let seat_has_active = self
+            .sessions
+            .iter()
+            .any(|session| session.seat == seat && session.is_active());
+        if !seat_has_active {
             if let Some(next) = self
                 .sessions
                 .iter_mut()
@@ -445,6 +484,95 @@ impl Sessions {
             }
         }
     }
+
+    /// Renders the registry in the record format the daemon serves at
+    /// `/scheme/logind/sessions`: one session per line, the fields
+    /// `id uid user seat tty type state leader since host` separated by tabs.
+    ///
+    /// This is the live view, so unlike the `utmp` file it carries the seat,
+    /// the session type and the exact state, and the identifiers are the ones
+    /// the daemon hands out — which is what `terminate-session` addresses.
+    pub fn encode(&self) -> String {
+        let mut out = String::new();
+        for session in &self.sessions {
+            out.push_str(&format!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                field(&session.id),
+                session.uid,
+                field(&session.user),
+                field(&session.seat),
+                field(&session.tty),
+                session.session_type.as_str(),
+                session.state.as_str(),
+                session.leader,
+                session.since,
+                field(&session.host),
+            ));
+        }
+        out
+    }
+
+    /// Rebuilds a registry from the records of [`Sessions::encode`].
+    ///
+    /// Blank lines are skipped, so a trailing newline is fine. Anything else
+    /// that is not a well formed record is an error: dropping sessions silently
+    /// would be worse than failing.
+    pub fn parse(records: &str) -> Result<Self, RecordError> {
+        let mut sessions = Self::new();
+        let mut next_id = 0;
+
+        for (number, line) in records.lines().enumerate() {
+            let line = line.trim_end_matches('\r');
+            if line.is_empty() {
+                continue;
+            }
+
+            let fields: Vec<&str> = line.split('\t').collect();
+            if fields.len() != RECORD_FIELDS {
+                return Err(RecordError(format!(
+                    "line {}: expected {RECORD_FIELDS} fields, found {}",
+                    number + 1,
+                    fields.len()
+                )));
+            }
+
+            let session = Session {
+                id: fields[0].to_owned(),
+                uid: number_field(fields[1], "uid", number)?,
+                user: fields[2].to_owned(),
+                seat: fields[3].to_owned(),
+                tty: fields[4].to_owned(),
+                session_type: SessionType::parse(fields[5]).ok_or_else(|| {
+                    RecordError(format!(
+                        "line {}: unknown session type {:?}",
+                        number + 1,
+                        fields[5]
+                    ))
+                })?,
+                state: SessionState::parse(fields[6]).ok_or_else(|| {
+                    RecordError(format!(
+                        "line {}: unknown state {:?}",
+                        number + 1,
+                        fields[6]
+                    ))
+                })?,
+                leader: number_field(fields[7], "leader", number)?,
+                since: number_field(fields[8], "since", number)?,
+                host: fields[9].to_owned(),
+            };
+
+            // Identifiers are handed out in order, so a later login always gets
+            // a higher one; keeping the highest seen preserves that across a
+            // restart of the daemon.
+            if let Ok(id) = session.id.parse::<u64>() {
+                next_id = next_id.max(id);
+            }
+            sessions.sessions.push(session);
+        }
+
+        sessions.next_id = next_id;
+        Ok(sessions)
+    }
 }
 
 /// The seat a terminal belongs to.
@@ -521,6 +649,19 @@ mod tests {
         sessions.logout("1").unwrap();
         assert!(sessions.is_empty());
         assert!(sessions.seats().is_empty());
+    }
+
+    #[test]
+    fn a_session_that_was_stopped_still_hands_the_console_over() {
+        let mut sessions = Sessions::new();
+        login(&mut sessions, "user", "tty1", 100);
+        login(&mut sessions, "root", "tty2", 200);
+
+        // A session that was asked to stop is marked closing, so it is no
+        // longer the active one by the time it ends.
+        assert!(sessions.set_closing("1"));
+        sessions.logout("1").unwrap();
+        assert_eq!(sessions.active_on(DEFAULT_SEAT).unwrap().id, "2");
     }
 
     #[test]
@@ -668,5 +809,84 @@ mod tests {
         login(&mut sessions, "user", "tty1", 100);
         let row = sessions.list()[0].to_row();
         assert_eq!(row, "1        1000       user       seat0    tty1");
+    }
+
+    #[test]
+    fn records_carry_the_live_view() {
+        let mut sessions = Sessions::new();
+        sessions.login(&LoginRequest::tty("user", 1000, "tty1", 42, 100));
+        sessions.login(&LoginRequest {
+            host: "example.org".to_owned(),
+            session_type: SessionType::Other,
+            ..LoginRequest::tty("root", 0, "tty2", 77, 200)
+        });
+
+        let encoded = sessions.encode();
+        assert_eq!(
+            encoded,
+            "1\t1000\tuser\tseat0\ttty1\ttty\tactive\t42\t100\t\n\
+             2\t0\troot\tseat0\ttty2\tunspecified\tonline\t77\t200\texample.org\n"
+        );
+
+        let parsed = Sessions::parse(&encoded).unwrap();
+        assert_eq!(parsed.list(), sessions.list());
+        assert_eq!(parsed.seats(), sessions.seats());
+
+        // The next identifier follows the ones that were served.
+        let mut parsed = parsed;
+        assert_eq!(
+            parsed.login(&LoginRequest::tty("user", 1000, "tty3", 9, 300)),
+            "3"
+        );
+    }
+
+    #[test]
+    fn identifiers_of_finished_sessions_are_not_reused() {
+        let mut sessions = Sessions::new();
+        let first = sessions.login(&LoginRequest::tty("user", 1000, "tty1", 42, 100));
+        sessions.login(&LoginRequest::tty("root", 0, "tty2", 77, 200));
+        sessions.logout(&first);
+
+        let mut parsed = Sessions::parse(&sessions.encode()).unwrap();
+        assert_eq!(parsed.list().len(), 1);
+        assert_eq!(
+            parsed.login(&LoginRequest::tty("user", 1000, "tty3", 9, 300)),
+            "3"
+        );
+    }
+
+    #[test]
+    fn empty_records_are_fine_but_broken_ones_are_not() {
+        assert_eq!(Sessions::parse("").unwrap().list().len(), 0);
+        assert_eq!(Sessions::parse("\n\n").unwrap().list().len(), 0);
+
+        let valid = "1\t1000\tuser\tseat0\ttty1\ttty\tactive\t42\t100\t\n";
+        assert_eq!(Sessions::parse(valid).unwrap().list().len(), 1);
+        // A carriage return at the end of the line is tolerated.
+        let crlf = "1\t1000\tuser\tseat0\ttty1\ttty\tactive\t42\t100\t\r\n";
+        assert_eq!(Sessions::parse(crlf).unwrap().list().len(), 1);
+
+        for broken in [
+            // Nine fields instead of ten.
+            "1\t1000\tuser\tseat0\ttty1\ttty\tactive\t42\t100\n",
+            "1\tnotanumber\tuser\tseat0\ttty1\ttty\tactive\t42\t100\t\n",
+            "1\t1000\tuser\tseat0\ttty1\tbogus\tactive\t42\t100\t\n",
+            "1\t1000\tuser\tseat0\ttty1\ttty\tbogus\t42\t100\t\n",
+            "1\t1000\tuser\tseat0\ttty1\ttty\tactive\tnotanumber\t100\t\n",
+            "1\t1000\tuser\tseat0\ttty1\ttty\tactive\t42\tnotanumber\t\n",
+        ] {
+            let error = Sessions::parse(broken).unwrap_err();
+            assert!(error.to_string().contains("invalid session record"));
+        }
+    }
+
+    #[test]
+    fn separators_inside_a_value_cannot_break_a_record() {
+        let mut sessions = Sessions::new();
+        sessions.login(&LoginRequest::tty("user\tx", 1000, "tty\n1", 42, 100));
+
+        let parsed = Sessions::parse(&sessions.encode()).unwrap();
+        assert_eq!(parsed.list()[0].user, "user x");
+        assert_eq!(parsed.list()[0].tty, "tty 1");
     }
 }

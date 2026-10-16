@@ -153,6 +153,65 @@ padrão (compatibilidade) + `loginctl` como consumidor real, e o daemon depois.
   no boot, `logind` avisado pelo `getty`/`login` (sessão real em vez de reconstruída),
   `wtmp` para um futuro `last`, `loginctl terminate-session`.
 
+## 2026-10-15e — #34 logind slice 2/2: daemon `/scheme/logind` + sessões reais
+
+Fecha a fatia de **Session/seat management**. Até aqui o `loginctl` só *reconstruía* a
+lista lendo `utmp`; agora existe um dono do estado (o daemon), o arquivo é mantido em
+sincronia com ele, e o `login` avisa o daemon quando uma sessão começa e termina.
+
+- [DONE] `logind/src/protocol.rs` — protocolo **textual write-then-read** servido em
+  `/scheme/logind`: controla por `login <user> <uid> <tty> <pid> [seat]`, `logout <alvo>`,
+  `activate <alvo>`, `terminate <alvo>`; resposta `ok [msg]` ou `err <msg>`.
+  Gramática em texto de propósito: o `login` reporta a sessão com I/O de arquivo puro,
+  antes de linkar contra esta crate. Leitura não pede requisição — o scheme serve as
+  sessões como **registros** (`Sessions::encode`) e os seats como linhas tab-separadas.
+- [DONE] `logind/src/registry.rs` — estado vivo do boot, puro e host-testável:
+  - `Registry::boot` trunca o utmp e escreve o `BOOT_TIME` (um `utmp` velho não passa por
+    atual); `Registry::new` é o **boot tolerante** (não toca no arquivo) usado quando o
+    registro não pode ser preparado — sessões continuam em memória, só a visão de arquivo
+    se perde, em vez de o login manager não subir;
+  - `handle()` aplica `Login`/`Logout`/`Activate`/`Terminate` e devolve um `Outcome`
+    (`message` + pid a sinalizar) — quem fala com o sistema operacional é o chamador, o que
+    mantém a máquina de estados testável;
+  - `prune(alive)` remove sessões cujo líder sumiu, chamado só com um predicado
+    **conservador** (vivo na dúvida): lista show de sessão morta incomoda menos que
+    esconder uma viva;
+  - um login no mesmo terminal substitui a sessão anterior (login não reportado como
+    encerrado não sobrevive ao próximo), e o `utmp` é reescrito a cada mudança.
+- [DONE] `logind/src/session.rs` — ganhou `encode`/`parse` (registros de 10 campos
+  tab-separados: id uid user seat tty type state leader since host) com erro de registro
+  tolerante; e o `logout` passou a **repassar o console** quando o seat fica sem sessão
+  ativa, cobrindo uma sessão marcada `closing` pelo `terminate`.
+- [DONE] `logind/src/client.rs` + `bin/loginctl.rs` reescrito — **daemon primeiro**: lê as
+  sessões/seats do scheme quando ele está montado e cai para o arquivo de registros quando
+  não está (mesma saída nos dois casos).
+- [DONE] `logind/src/cli.rs` — `terminate-session`/`kill-session` e `activate-session`/
+  `activate`, `--scheme` (endereço do daemon) e `--utmp`/`--file` explícito.
+- [DONE] `logind/src/bin/logind.rs` + `logind/src/scheme.rs` — daemon do boot:
+  - serve `/scheme/logind` (não entra em espaço de nomes vazio, ao contrário do `logd`:
+    manter o utmp em dia precisa dos file schemes a cada requisição);
+  - boot id de `LOGIND_BOOT_ID` → `JOURNAL_BOOT_ID` → gerado, para `loginctl` e `journalctl`
+    descreverem o mesmo boot;
+  - liveness do `prune` por `kill(pid, 0)`: só `ESRCH` conta como morto (não há procfs);
+  - `terminate` manda `SIGTERM` no **líder** da sessão.
+- [DONE] **78 testes** no crate (67 unit + 5 `tests/daemon.rs` + 6 `tests/pipeline.rs`),
+  clippy limpo.
+- [DONE] Produtor de sessões (o `login` de verdade):
+  - `getty/src/main.rs` exporta `TTY_NAME` (o terminal *deste* getty), então a sessão é
+    reportada no `ttyN` certo e não no pty;
+  - `userutils` com **patch pinado** (`recipes/core/userutils/login-logind.patch`, `rev`
+    fixado no `recipe.toml`): `spawn_shell_registered` reporta `login <user> <uid> <tty> <pid>`
+    com o **pid do shell** como líder (parar a sessão para o que o usuário roda) e `logout`
+    quando o shell termina; a notificação é **best-effort** — login sem daemon continua
+    funcionando.
+- [DONE] Empacotado: `init.d/00_logind.service` (agendada antes de `30_console.target`),
+  `BASE_EXTRA_BINS = journalctl loginctl logind`.
+- [DONE] Validação no target redox: `cook base` **successful** (`logind`, `loginctl`,
+  `getty` e o service unit no stage) e `cook userutils` **successful** (`login` compila com
+  o patch; o retorno é `io::Result<i32>`, não `libredox::Result`).
+- [PENDING] hardware: boot de verdade (`harddrive.img`) e `who`/`last` sobre `wtmp` ficam
+  para o teste no Acer.
+
 ## 2026-10-15b — status: issues de driver fechadas
 
 - Fechadas no tracker `aios-b-612/aios`: #25 (WiFi), #27 (audio), #28 (TRIM), #29 (BT),

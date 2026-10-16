@@ -1,0 +1,113 @@
+diff --git a/src/bin/login.rs b/src/bin/login.rs
+index 83ad72d..ed82b38 100644
+--- a/src/bin/login.rs
++++ b/src/bin/login.rs
+@@ -9,7 +9,6 @@ use std::str;
+ use extra::option::OptionalExt;
+ use redox_users::{All, AllUsers, Config, User};
+ use termion::input::TermRead;
+-use userutils::spawn_shell;
+ 
+ const _MAN_PAGE: &'static str = /* @MANSTART{login} */
+     r#"
+@@ -35,7 +34,7 @@ const ISSUE_FILE: &'static str = "/etc/issue";
+ const MOTD_FILE: &'static str = "/etc/motd";
+ 
+ // TODO: Move to redox_users once the definition solidifies.
+-const DEFAULT_SCHEMES: [&'static str; 26] = [
++const DEFAULT_SCHEMES: [&'static str; 27] = [
+     // Kernel schemes
+     "debug",
+     "event",
+@@ -69,6 +68,9 @@ const DEFAULT_SCHEMES: [&'static str; 26] = [
+     "pty",
+     "sudo",
+     "audio",
++    // Login manager: sessions are listed and controlled from within the
++    // session, and a login reports itself as it starts and ends.
++    "logind",
+ ];
+ pub fn apply_login_schemes(
+     user: &User<redox_users::auth::Full>,
+@@ -117,6 +119,63 @@ fn load_config_schemes(user: &User<redox_users::auth::Full>) -> Option<Vec<Strin
+         .map(|cfg| cfg.schemes.clone())
+ }
+ 
++/// Runs the shell of a login, telling the login manager about the session.
++///
++/// This is [`userutils::spawn_shell`] plus the session bookkeeping: the session
++/// leader is the shell, so that stopping the session stops what the user is
++/// running, and the login is reported as over once the shell is gone.
++fn spawn_shell_registered<T: Default>(user: &User<T>) -> io::Result<i32> {
++    let mut command = user.shell_cmd();
++
++    let mut child = command.spawn()?;
++
++    let terminal = session_terminal();
++    report_session(
++        "login",
++        &format!(
++            "login {} {} {} {}\n",
++            user.user,
++            user.uid,
++            terminal,
++            child.id()
++        ),
++    );
++
++    let code = match child.wait()?.code() {
++        Some(code) => code,
++        None => 1,
++    };
++
++    report_session("logout", &format!("logout {terminal}\n"));
++
++    Ok(code)
++}
++
++/// Tells the login manager about a session, best effort.
++///
++/// A boot without a login manager still has to be able to log in, so every
++/// failure here is ignored: a login that goes unrecorded is a far smaller
++/// problem than a login that cannot happen.
++fn report_session(action: &str, request: &str) {
++    let path = format!("/scheme/logind/{action}");
++    let Ok(mut file) = File::options().read(true).write(true).open(&path) else {
++        return;
++    };
++
++    let _ = file.write_all(request.as_bytes());
++    let _ = file.flush();
++}
++
++/// The terminal this login is on, as the session records name it.
++///
++/// `getty` says which terminal it is attached to in `TTY_NAME`; `TTY`, the pty
++/// it hands over, is only a fallback for a login started by hand.
++fn session_terminal() -> String {
++    std::env::var("TTY_NAME")
++        .or_else(|_| std::env::var("TTY"))
++        .unwrap_or_else(|_| "console".to_owned())
++}
++
+ pub fn main() {
+     let mut stdout = io::stdout();
+     let mut stderr = io::stderr();
+@@ -168,7 +227,7 @@ pub fn main() {
+                             syscall::F_SETFD,
+                             libredox::protocol::O_CLOEXEC,
+                         );
+-                        spawn_shell(user).unwrap_or_exit(1);
++                        spawn_shell_registered(user).unwrap_or_exit(1);
+                         let _ = libredox::call::fcntl(before_ns_fd.raw(), syscall::F_SETFD, 0);
+                         let _ = libredox::call::close(
+                             libredox::call::setns(before_ns_fd.into_raw()).unwrap_or_exit(1),
+@@ -190,7 +249,7 @@ pub fn main() {
+                                 stdout.flush().r#try(&mut stderr);
+                             }
+ 
+-                            spawn_shell(user).unwrap_or_exit(1);
++                            spawn_shell_registered(user).unwrap_or_exit(1);
+                             break;
+                         }
+                     }

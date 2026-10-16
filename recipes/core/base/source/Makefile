@@ -34,10 +34,11 @@ endif
 # For testing/benchmarking only
 # BASE_BINS += drawbench
 
-# Installed from packages whose name differs from the binary name.
+# Installed from packages whose name differs from the binary name, plus the
+# login manager, whose daemon and tool live in the same package.
 # journalctl lives in the journald package together with the logging daemon,
-# and loginctl lives in the logind package together with the login manager.
-BASE_EXTRA_BINS = journalctl loginctl
+# and loginctl and logind live in the logind package.
+BASE_EXTRA_BINS = journalctl loginctl logind
 BASE_EXTRA_CARGO_ARGS = -p journald -p logind
 
 INITFS_CARGO_ARGS = $(foreach bin,$(INITFS_BINS),-p $(bin))

@@ -3,14 +3,18 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::client::DEFAULT_SCHEME;
 use crate::utmp::DEFAULT_PATH;
 
 /// Environment variable overriding the login record file.
 pub const ENV_UTMP: &str = "LOGIND_UTMP";
 
+/// Environment variable overriding the login manager mount point.
+pub const ENV_SCHEME: &str = "LOGIND_SCHEME";
+
 /// Help text.
 pub const USAGE: &str = "\
-loginctl — control the systemd login manager (sessions and seats)
+loginctl — control the login manager (sessions and seats)
 
 Usage:
   loginctl [OPTIONS...] COMMAND [NAME...]
@@ -22,15 +26,22 @@ Commands:
   seat-status [NAME...]    Show terse runtime status of one or more seats
   show-session [ID...]     Show properties of one or more sessions
   show-seat [NAME...]      Show properties of one or more seats
+  terminate-session ID...  Stop one or more sessions
+  activate-session ID...   Give one or more sessions the console of their seat
 
 Options:
-  --utmp PATH              Login record file (default $LOGIND_UTMP or
-                           /var/run/utmp)
+      --scheme PATH        Login manager mount point (default $LOGIND_SCHEME or
+                           /scheme/logind)
+      --utmp PATH          Login record file (default $LOGIND_UTMP or
+                           /var/run/utmp); naming a file reads it and ignores
+                           the login manager
   -n, --no-legend          Do not print the column headers
   -h, --help               Show this help
       --version            Show package version
 
-Names may also be given after `--`.
+Sessions are read from the login manager when it is running, and from the
+record file otherwise, so a listing works from a rescue shell too. Names may
+also be given after `--`.
 ";
 
 /// Commands, corresponding to the `loginctl` verbs.
@@ -51,6 +62,10 @@ pub enum Command {
     ShowSession,
     /// `show-seat`
     ShowSeat,
+    /// `terminate-session`
+    TerminateSession,
+    /// `activate-session`
+    ActivateSession,
 }
 
 impl Command {
@@ -64,6 +79,8 @@ impl Command {
             "seat-status" => Self::SeatStatus,
             "show-session" | "session-show" => Self::ShowSession,
             "show-seat" | "seat-show" => Self::ShowSeat,
+            "terminate-session" | "kill-session" => Self::TerminateSession,
+            "activate-session" | "activate" => Self::ActivateSession,
             _ => return None,
         })
     }
@@ -72,8 +89,23 @@ impl Command {
     pub fn takes_targets(self) -> bool {
         matches!(
             self,
-            Self::SessionStatus | Self::SeatStatus | Self::ShowSession | Self::ShowSeat
+            Self::SessionStatus
+                | Self::SeatStatus
+                | Self::ShowSession
+                | Self::ShowSeat
+                | Self::TerminateSession
+                | Self::ActivateSession
         )
+    }
+
+    /// Whether the command needs at least one name.
+    pub fn needs_targets(self) -> bool {
+        matches!(self, Self::TerminateSession | Self::ActivateSession)
+    }
+
+    /// Whether the command changes the state of a session.
+    pub fn is_action(self) -> bool {
+        self.needs_targets()
     }
 }
 
@@ -86,6 +118,11 @@ pub struct Cli {
     pub targets: Vec<String>,
     /// Login record file to read.
     pub utmp: PathBuf,
+    /// Whether the record file was named on the command line or in the
+    /// environment: a named file is read instead of asking the login manager.
+    pub utmp_given: bool,
+    /// Login manager mount point.
+    pub scheme: PathBuf,
     /// Whether to omit column headers.
     pub no_legend: bool,
     /// Whether `--help` was requested.
@@ -100,6 +137,8 @@ impl Default for Cli {
             command: Command::None,
             targets: Vec::new(),
             utmp: PathBuf::from(DEFAULT_PATH),
+            utmp_given: false,
+            scheme: PathBuf::from(DEFAULT_SCHEME),
             no_legend: false,
             help: false,
             version: false,
@@ -133,6 +172,16 @@ where
         if let Ok(path) = std::env::var(ENV_UTMP) {
             if !path.trim().is_empty() {
                 cli.utmp = PathBuf::from(path);
+                // A record file named by the environment is as explicit as one
+                // named on the command line.
+                cli.utmp_given = true;
+            }
+        }
+    }
+    if cli.scheme == Path::new(DEFAULT_SCHEME) {
+        if let Ok(scheme) = std::env::var(ENV_SCHEME) {
+            if !scheme.trim().is_empty() {
+                cli.scheme = PathBuf::from(scheme);
             }
         }
     }
@@ -171,6 +220,21 @@ where
                         return Ok(cli);
                     }
                     "no-legend" => cli.no_legend = true,
+                    "scheme" => {
+                        let value = match value {
+                            Some(value) => value,
+                            None => match pending.next() {
+                                Some(value) => value,
+                                None => {
+                                    return err(format!("option --{name} requires an argument"));
+                                }
+                            },
+                        };
+                        if value.is_empty() {
+                            return err("--scheme requires a non-empty path");
+                        }
+                        cli.scheme = PathBuf::from(value);
+                    }
                     "utmp" | "file" => {
                         let value = match value {
                             Some(value) => value,
@@ -185,6 +249,7 @@ where
                             return err("--utmp requires a non-empty path");
                         }
                         cli.utmp = PathBuf::from(value);
+                        cli.utmp_given = true;
                     }
                     _ => return err(format!("unknown option --{name}")),
                 }
@@ -225,6 +290,9 @@ where
     }
     if !cli.targets.is_empty() && !cli.command.takes_targets() {
         return err("this command does not take names");
+    }
+    if cli.targets.is_empty() && cli.command.needs_targets() {
+        return err("this command needs at least one session");
     }
 
     Ok(cli)
@@ -299,6 +367,10 @@ mod tests {
     fn the_utmp_file_can_be_selected() {
         let cli = parse_args(args(&["--utmp", "/tmp/utmp", "list-sessions"])).unwrap();
         assert_eq!(cli.utmp, PathBuf::from("/tmp/utmp"));
+        assert!(
+            cli.utmp_given,
+            "a named file replaces the login manager as the source"
+        );
 
         let cli = parse_args(args(&["--utmp=/tmp/other", "list-sessions"])).unwrap();
         assert_eq!(cli.utmp, PathBuf::from("/tmp/other"));
@@ -308,10 +380,50 @@ mod tests {
 
         assert!(parse_args(args(&["--utmp"])).is_err());
         assert!(parse_args(args(&["--utmp="])).is_err());
-        assert_eq!(
-            parse_args(args(&["list-sessions"])).unwrap().utmp,
-            PathBuf::from(DEFAULT_PATH)
+
+        let cli = parse_args(args(&["list-sessions"])).unwrap();
+        assert_eq!(cli.utmp, PathBuf::from(DEFAULT_PATH));
+        assert!(!cli.utmp_given, "by default the daemon is asked first");
+        assert_eq!(cli.scheme, PathBuf::from(DEFAULT_SCHEME));
+    }
+
+    #[test]
+    fn the_login_manager_can_be_located() {
+        let cli = parse_args(args(&["--scheme", "/tmp/logind", "list-sessions"])).unwrap();
+        assert_eq!(cli.scheme, PathBuf::from("/tmp/logind"));
+        assert!(
+            !cli.utmp_given,
+            "locating the daemon does not select a file"
         );
+
+        let cli = parse_args(args(&["--scheme=/tmp/other", "list-sessions"])).unwrap();
+        assert_eq!(cli.scheme, PathBuf::from("/tmp/other"));
+
+        assert!(parse_args(args(&["--scheme"])).is_err());
+        assert!(parse_args(args(&["--scheme="])).is_err());
+    }
+
+    #[test]
+    fn sessions_can_be_stopped_and_activated() {
+        let cli = parse_args(args(&["terminate-session", "1"])).unwrap();
+        assert_eq!(cli.command, Command::TerminateSession);
+        assert_eq!(cli.targets, vec!["1"]);
+        assert!(cli.command.is_action());
+
+        for command in ["activate-session", "activate"] {
+            let cli = parse_args(args(&[command, "tty1"])).unwrap();
+            assert_eq!(cli.command, Command::ActivateSession);
+            assert_eq!(cli.targets, vec!["tty1"]);
+        }
+
+        let cli = parse_args(args(&["kill-session", "1", "2"])).unwrap();
+        assert_eq!(cli.command, Command::TerminateSession);
+        assert_eq!(cli.targets, vec!["1", "2"]);
+
+        // Those commands act on a session, so they need one.
+        assert!(parse_args(args(&["terminate-session"])).is_err());
+        assert!(parse_args(args(&["activate-session"])).is_err());
+        assert!(parse_args(args(&["list-sessions", "1"])).is_err());
     }
 
     #[test]
@@ -345,6 +457,8 @@ mod tests {
             "seat-status",
             "show-session",
             "show-seat",
+            "terminate-session",
+            "activate-session",
         ] {
             assert!(USAGE.contains(command), "usage is missing {command}");
         }
