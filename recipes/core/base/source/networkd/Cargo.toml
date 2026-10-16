@@ -1,0 +1,16 @@
+[package]
+name = "networkd"
+description = "Network management (networkd/networkctl) for Redox"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "networkd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "networkctl"
+path = "src/bin/networkctl.rs"
+
+[lints]
+workspace = true

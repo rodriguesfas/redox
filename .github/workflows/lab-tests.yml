@@ -36,11 +36,11 @@ jobs:
           ls recipes/core/base/source/audiod/Cargo.toml
           grep -c ath9k_net recipes/core/base/source/Cargo.toml
 
-      - name: Suite de testes (drivers WiFi/BT/i2c/storage/audio + journald/logind)
+      - name: Suite de testes (drivers WiFi/BT/i2c/storage/audio + journald/logind/networkd)
         working-directory: recipes/core/base/source
         run: |
           set -e
-          PKGS="iwlwifi rtw88 mt7921d ath9k net80211 btusd iwlwifi_net i2c-hid i2c-dwd driver-block nvmed wpa_supplicant i2c-hidd acpid journald logind"
+          PKGS="iwlwifi rtw88 mt7921d ath9k net80211 btusd iwlwifi_net i2c-hid i2c-dwd driver-block nvmed wpa_supplicant i2c-hidd acpid journald logind networkd"
           for pkg in $PKGS; do
             echo "=== $pkg ==="
             cargo test -p "$pkg"

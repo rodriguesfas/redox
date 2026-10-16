@@ -153,6 +153,54 @@ padrão (compatibilidade) + `loginctl` como consumidor real, e o daemon depois.
   no boot, `logind` avisado pelo `getty`/`login` (sessão real em vez de reconstruída),
   `wtmp` para um futuro `last`, `loginctl terminate-session`.
 
+## 2026-10-16a — #34 networkd slice 1/2: config declarativa + `networkctl`
+
+Segue a ordem do #34 (`journald` → `logind` → **`networkd`** → `resolved`). O que existe
+hoje: `dhcpd` escreve direto em `/scheme/netcfg` (`addr/set`, `route/add`,
+`resolv/nameserver`) com tudo *hardcoded* em `eth0`, e nada lê configuração nenhuma;
+`/etc/net/*` do image config é herança de um scheme antigo e não é lido por ninguém.
+Então esta fatia cria a camada que faltava: um arquivo declara o que a rede deve ser, e
+uma ferramenta transforma isso nos writes do netcfg.
+
+- [DONE] Crate novo `networkd` (workspace member, core 100% host-testável, sem deps):
+  - `addr.rs` — `Ipv4Addr` (só quad decimal: nada de shorthand/hex/octal), `Ipv4Cidr`
+    (máscara, rede, `contains`) e `MacAddr`; `is_unicast` é exatamente o teste que o
+    stack aplica (recusa `0.0.0.0`, broadcast e multicast).
+  - `config.rs` — arquivos `*.network` no formato do systemd-networkd:
+    `[Match]` (`Name=` com `*`/`?`, `MACAddress=`), `[Network]` (`Description`, `DHCP`,
+    `Address`, `Gateway`, `DNS`, todos aceitando vários valores) e um `[Route]` por rota
+    (`Destination`, `Gateway`, `Metric`); leitura de diretório em ordem de nome (o
+    primeiro que casa vence), `Config::render` ida-e-volta, e chave/seção desconhecida
+    vira **aviso**, não erro (config de versão futura não derruba o boot).
+  - `plan.rs` — a config resolvida contra as interfaces que existem: `Mode::{Dhcp,Static}`
+    e `writes()` com o contrato do netcfg em um lugar só (`ifaces/<n>/addr/set`,
+    `route/add` com `default via`/`CIDR via`, `resolv/nameserver`); interface sem arquivo
+    que case fica em **DHCP** (o boot de hoje), com aviso; `notes()` diz o que não dá para
+    aplicar (o stack só configura `eth0`) e o que se perde (um único resolver).
+  - `netcfg.rs` — `/scheme/netcfg` como árvore: lê as interfaces de `ifaces/` (MAC vindo do
+    stack), escreve com `write + sync_data` e **nunca cria** o control file (um path que o
+    stack não serve tem de falhar, não virar arquivo); `apply` para no primeiro erro;
+    `$NETWORKD_NETCFG` sobrepõe o mount.
+  - `cli.rs` + `render.rs` + `bin/networkctl.rs` — `list`, `status [IFACE]`, `show [FILE]`,
+    `apply [--dry-run]`, `--config-dir`/`--netcfg`/`-n`/`-h`/`--version`; tabela alinhada
+    no `list`, relatório com os writes no fim no `status`; avisos vão para o **stderr**,
+    uma vez só.
+- [DONE] **59 testes** no crate (51 unit + 8 `tests/pipeline.rs`), clippy limpo.
+- [DONE] E2E com o **binário real** e um `/scheme/netcfg` de mentira (o mesmo layout que o
+  daemon vê): `list` mostra `eth0 static 192.168.1.50/24`; `status eth0` lista endereço,
+  gateway, rota e resolver e depois os 4 writes; `apply --dry-run` não escreve nada e
+  `apply` grava `addr/set=192.168.1.50/24` e `resolv/nameserver=9.9.9.9`; interface
+  desconhecida sai com 1; `show` mostra a config normalizada e reclama de `[Wireless]`.
+- [DONE] Empacotado: `BASE_EXTRA_BINS += networkctl`, `-p networkd`; CI roda `networkd`.
+  `cook base` **successful** (`networkctl` no stage, ELF estátito para redox).
+- [DONE] Suíte host: **505 testes em 17 pacotes** (inclui `logind` 78 e `networkd` 59).
+- [PENDING] slice 2/2: daemon `networkd` (dono de `/scheme/networkd`), aplicar no boot e
+  reagir a mudanças do netcfg; default `/etc/networkd/10-eth0.network` no image config
+  (hoje: sem arquivo, tudo em DHCP, igual ao boot atual).
+- [PENDING] `resolved` (item seguinte do #34): `/etc/resolv.conf` gerenciado — é o arquivo
+  que a relibc lê (`get_dns_server` lê a primeira linha `nameserver `) e hoje ninguém
+  escreve.
+
 ## 2026-10-15e — #34 logind slice 2/2: daemon `/scheme/logind` + sessões reais
 
 Fecha a fatia de **Session/seat management**. Até aqui o `loginctl` só *reconstruía* a
