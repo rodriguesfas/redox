@@ -207,6 +207,15 @@ alguém pede), e é o **único** escritor do stack — `networkctl apply` passa 
   segue 72; `journald` 115, `logind` 78).
 - [PENDING] smoke/boot real (`harddrive.img` no Acer): `init` subindo `10_networkd.service` e o
   daemon aplicando (ou não, se o arquivo só disser DHCP) — depende do usuário.
+- [PENDING] `networkd` × `dhcpd`: o `10_dhcpd.service` sobe sempre e é ele que escreve o endereço
+  do lease (o `networkd` só escreve o estático). Com o default (`DHCP=yes`) os dois concordam — o
+  plano não pede write nenhum —, mas um `eth0` **estático** declarado ainda teria o `dhcpd`
+  escrevendo por cima. Quem decide se o DHCP roda deveria ser o `networkd` (ou a unidade do `dhcpd`
+  condicionada à configuração). Fica para o próximo slice.
+- [PENDING] `networkctl apply` monta o plano (lê o stack) **antes** de poder delegar, então um
+  usuário sem permissão no `/scheme/netcfg` não consegue nem pedir ao dono do write. Pedir ao
+  daemon primeiro — e ler o plano só para os avisos, sem falhar se não der — resolveria; fica para
+  quando houver política de quem pode pedir.
 - [PENDING] #34 ainda tem: systemd-boot/OTA, cgroups, e o resto do checklist da issue.
 
 ## 2026-10-16c — #34 `resolved` slice 2/2: daemon dono de `/scheme/resolved`
