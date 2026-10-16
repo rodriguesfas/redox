@@ -17,10 +17,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::addr::MacAddr;
 use crate::cli::ENV_CONFIG;
 use crate::config::{Config, ConfigError, CONFIG_DIR};
 use crate::netcfg::{Netcfg, NetcfgError};
-use crate::plan::{Plan, Write};
+use crate::plan::{InterfacePlan, Observed, Plan, Write};
 
 /// Returned when the configuration or the stack cannot be read.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,6 +131,33 @@ impl Networkd {
         Ok(Plan::build(&config, &observed))
     }
 
+    /// What the configuration means for one interface, whether or not it is
+    /// there yet.
+    ///
+    /// This is the question the DHCP client asks about the interface it is
+    /// about to configure: a lease written over an address the configuration
+    /// gave the interface is a change nobody asked for. The hardware address is
+    /// read from the stack when the stack can say it — a rule that matches on
+    /// the address is a rule the stack decides — but the answer does not need
+    /// the stack to be there: who owns the DHCP client is a question about the
+    /// configuration, and it is the client that needs the stack, not the
+    /// answer.
+    pub fn plan_for(&self, iface: &str) -> Result<InterfacePlan, NetworkdError> {
+        let config = self.config()?;
+        let mac = self
+            .netcfg
+            .read(&format!("ifaces/{iface}/mac"))
+            .ok()
+            .and_then(|text| text.trim().parse::<MacAddr>().ok());
+
+        let observed = Observed {
+            name: iface.to_owned(),
+            mac,
+        };
+
+        Ok(InterfacePlan::resolve(&config, &observed).0)
+    }
+
     /// Makes the stack look like the configuration.
     ///
     /// The writes stop at the first refusal of the stack, and what was written
@@ -196,7 +224,7 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::plan::Write;
+    use crate::plan::{Mode, Write};
 
     fn scratch(name: &str) -> PathBuf {
         let dir =
@@ -407,5 +435,70 @@ mod tests {
             write.render("/scheme/netcfg"),
             "write /scheme/netcfg/ifaces/eth0/addr/set 10.0.0.2/8"
         );
+    }
+
+    #[test]
+    fn one_interface_is_decided_whether_or_not_it_is_there_yet() {
+        let (dir, _, networkd) = system(
+            "plan-for",
+            Some("[Match]\nName=eth0\n\n[Network]\nAddress=192.168.1.50/24\n"),
+        );
+
+        // The interface the configuration addresses is not left to DHCP, and
+        // the file that decided is named.
+        let plan = networkd.plan_for("eth0").unwrap();
+        assert_eq!(plan.mode, Mode::Static);
+        assert_eq!(
+            plan.source.as_deref(),
+            Some(networkd.config_dir().join("10-eth0.network").as_path())
+        );
+
+        // An interface no file matches is left to DHCP, and there is no file
+        // to name: `DHCP=yes` somewhere and no file at all are different
+        // answers, even though they mean the same thing for the client.
+        let plan = networkd.plan_for("wlan0").unwrap();
+        assert_eq!(plan.mode, Mode::Dhcp);
+        assert_eq!(plan.source, None);
+        assert!(!plan.is_configured());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_rule_that_matches_on_the_address_is_decided_with_the_stack() {
+        let (dir, _, networkd) = system(
+            "plan-for-mac",
+            Some("[Match]\nMACAddress=52:54:00:12:34:56\n\n[Network]\nAddress=10.0.0.2/8\n"),
+        );
+
+        // The stack reports the address, so the rule matches: the interface is
+        // addressed by the configuration, and a lease would write over it.
+        let plan = networkd.plan_for("eth0").unwrap();
+        assert_eq!(plan.mode, Mode::Static);
+        assert!(plan.is_configured());
+
+        // A stack that cannot report the address leaves the rule undecided,
+        // and an undecided interface is left to DHCP — which is also the only
+        // thing a client can do about an interface the stack does not serve.
+        let absent = Networkd::new(
+            networkd.config_dir().to_path_buf(),
+            Netcfg::new(dir.join("absent").to_string_lossy().into_owned()),
+        );
+        let plan = absent.plan_for("eth0").unwrap();
+        assert_eq!(plan.mode, Mode::Dhcp);
+        assert!(!plan.is_configured());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_configuration_that_cannot_be_read_is_refused_for_one_interface_too() {
+        let (dir, _, networkd) = system("plan-for-bad", None);
+        fs::write(networkd.config_dir().join("10-eth0.network"), [0xff, 0xfe]).unwrap();
+
+        let error = networkd.plan_for("eth0").unwrap_err();
+        assert!(error.0.contains("10-eth0.network"), "{error}");
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

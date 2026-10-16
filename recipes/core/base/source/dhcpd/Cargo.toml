@@ -1,0 +1,14 @@
+[package]
+name = "dhcpd"
+version = "0.0.0"
+edition = "2024"
+authors = ["Jeremy Soller <jackpot51@gmail.com>"]
+
+[dependencies]
+# The DHCP client asks the network daemon who decides the address of an
+# interface, so the question and the answer are written down once, in the
+# crate the daemon that answers them is made of.
+networkd = { path = "../networkd" }
+
+[lints]
+workspace = true

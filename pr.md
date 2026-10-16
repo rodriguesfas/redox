@@ -153,6 +153,61 @@ padrão (compatibilidade) + `loginctl` como consumidor real, e o daemon depois.
   no boot, `logind` avisado pelo `getty`/`login` (sessão real em vez de reconstruída),
   `wtmp` para um futuro `last`, `loginctl terminate-session`.
 
+## 2026-10-16e — #34 quem decide se o DHCP roda: o `networkd` (dhcpd x estatico)
+
+Fecha o pendente mais concreto do slice 2 do `networkd`: com o stack tendo um **unico** escritor,
+faltava dizer quem decide se o cliente DHCP roda. Um `eth0` estatico declarado ainda teria o
+`dhcpd` escrevendo o lease por cima; agora o cliente **pergunta** ao daemon antes de fazer
+qualquer coisa, e a resposta e a configuracao, nao a sorte.
+
+- [DONE] `plan.rs` — `InterfacePlan::resolve(config, iface)`: a regra do plano para **uma**
+  interface (arquivo que casa por nome/MAC; sem arquivo = DHCP), extraida do `Plan::build` para
+  ser a mesma nos dois lugares — o plano do sistema e a resposta de uma pergunta.
+- [DONE] `state.rs` — `Networkd::plan_for(iface)`: o plano de uma interface, exista ela ou nao.
+  O MAC e lido do stack **quando** o stack pode dizer (uma regra por `MACAddress=` precisa dele),
+  mas a resposta nao depende do stack estar montado: quem dona o cliente DHCP e pergunta de
+  configuracao, e quem precisa do stack e o cliente, nao a resposta.
+- [DONE] `protocol.rs` — pedido `dhcp <iface>` (o nome e validado contra travessia de caminho:
+  `.`, `..` e `/` sao recusados) e o tipo `Decision` (`dhcp\t<iface>\t<source>\t<dhcp|static>`),
+  com `encode`/`parse` round-trip. O `source` vem **antes** do modo de proposito: campo vazio no
+  meio sobrevive ao `trim` da linha de resposta e campo vazio no fim nao — e "um arquivo disse
+  DHCP=yes" e diferente de "nenhum arquivo casou" para quem le o log.
+- [DONE] `service.rs` + `scheme.rs` — o arquivo `dhcp` do scheme responde pela mesma trava do
+  `apply` (uma pergunta de cada vez, no mesmo estado que o watcher escreve); recusa vira `err` na
+  linha, nunca silencio.
+- [DONE] `client.rs` — `dhcp()`/`dhcp_if_mounted()` (`None` = nao ha daemon; erro = veredito,
+  inclusive recusa, que **nao** pode ser engolido), com o `message_if_mounted` privado dividido
+  entre `apply` e `dhcp`.
+- [DONE] `dhcpd` — pergunta ao daemon antes de qualquer coisa e decide em `verdict()`
+  (`Start` / `Skip` / `Refused`): `static` → **nao roda** e diz qual arquivo decidiu
+  (`eth0 is configured statically in /etc/networkd/10-eth0.network, not starting`); recusa →
+  **nao roda** e grita (`cannot ask the network daemon: ...`, exit 1); sem daemon (shell de
+  resgate) → comporta-se como sempre. De quebra: o argumento de interface agora e parseado
+  (`dhcpd wlan0 -v`) — o `TODO` de anos —, com `..`/`/`/flag desconhecida recusados com usage
+  (a unit ainda nao passa argumento: o boot continua `eth0`). O crate passa a depender de
+  `networkd` (como o `resolved`), entao a pergunta e a resposta estao escritas uma vez so.
+- [DONE] `10_dhcpd.service` passa a exigir `10_networkd.service` (`requires_weak`): o scheduler do
+  init so roda um job quando as deps nao estao mais pendentes, e o daemon de scheme so "fica
+  pronto" depois de registrar o scheme — ou seja, quando o `dhcpd` pergunta, tem quem responda.
+- [DONE] **110 testes** em `networkd` (95 unit + 7 `tests/daemon.rs` + 8 `tests/pipeline.rs`) e
+  **4** em `dhcpd` (era 1); fmt limpo nos dois. O clippy do `dhcpd` tem 3 avisos
+  **pre-existentes** do codigo upstream (linhas 166/296), nao tocados neste slice. O e2e cobre:
+  resposta `static` com o arquivo que decidiu, `DHCP=yes` com arquivo, interface sem arquivo
+  nenhum, configuracao ilegivel recusada, e a linha-resposta com o campo de source vazio
+  sobrevivendo ao transporte.
+- [DONE] Suite host: **632 testes em 19 pacotes**, 0 falhas (`dhcpd` entrou no `lab-tests.yml`;
+  `networkd` 110, `resolved` 72, `journald` 115, `logind` 78 sem regressao).
+- [DONE] Validacao redox: `cookbook_redoxer build -p networkd -p dhcpd` ok (3 s); `cook base`
+  **successful** → `usr/bin/dhcpd` (395 KB, com as mensagens novas), `usr/bin/networkd` (465 KB)
+  e `usr/lib/init.d/10_dhcpd.service` com a dependencia nova no stage.
+- [PENDING] smoke/boot real (`harddrive.img` no Acer) — depende do usuario: ver o `dhcpd`
+  perguntando ao `networkd` e o lease chegando (ou nao, se `10-eth0.network` virar estatico).
+- [PENDING] `dhcpd` faz **um** exchange e sai (upstream): o lease nao e renovado. Quem for decidir
+  por sessao (ou supervisionar clientes) deve virar instance unit (`dhcpd@<iface>.service`) com
+  renew — e, no `networkd`, um "quem decide" que tambem sabe *esperar* a interface.
+- [PENDING] `networkctl apply` ainda monta o plano (le o stack) antes de poder delegar; e #34
+  segue com systemd-boot/OTA e cgroups.
+
 ## 2026-10-16d — #34 `networkd` slice 2/2: daemon dono de `/scheme/networkd`
 
 Fecha o `networkd` — e com ele o eixo de init/userspace do #34 (journald ✅, logind ✅, resolved ✅,

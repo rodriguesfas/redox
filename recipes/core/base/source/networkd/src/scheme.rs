@@ -5,10 +5,11 @@
 //! writing to a control file is a request, and the answer is read back from the
 //! descriptor the request was written to.
 //!
-//! | file     | read            | write                        |
-//! |----------|-----------------|------------------------------|
-//! | `status` | the live report | —                            |
-//! | `apply`  | —               | make the stack match it      |
+//! | file     | read            | write                                    |
+//! |----------|-----------------|------------------------------------------|
+//! | `status` | the live report | —                                        |
+//! | `apply`  | —               | make the stack match it                  |
+//! | `dhcp`   | —               | what the configuration decides about one interface's address |
 //!
 //! A read is a snapshot taken when the file is opened. Requests are applied by
 //! [`crate::service::Service`], which is where the work is tested; the scheme
@@ -25,7 +26,7 @@ use crate::protocol::{format_response, Request};
 use crate::service::Service;
 
 /// The files of the scheme, in the order `ls` lists them.
-pub const ENTRIES: [&str; 2] = ["status", "apply"];
+pub const ENTRIES: [&str; 3] = ["status", "apply", "dhcp"];
 
 resource_scheme! {
     pub NetworkdScheme<>;
@@ -74,6 +75,7 @@ impl ResourceSync for Root {
             }
             // The control files: each one takes the request that names it.
             "apply" => NetworkdResource::Control(Control::new("apply")),
+            "dhcp" => NetworkdResource::Control(Control::new("dhcp")),
             // The root itself is a directory, and so is anything that is not
             // one of the files above.
             "" => return Err(Error::new(EISDIR)),

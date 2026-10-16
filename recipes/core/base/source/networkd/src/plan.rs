@@ -73,6 +73,57 @@ impl InterfacePlan {
     pub fn is_configured(&self) -> bool {
         self.configured
     }
+
+    /// Resolves the configuration against one interface.
+    ///
+    /// This is the rule of [`Plan::build`] for a single interface, and it is
+    /// also the rule a decision is answered with: an interface that is not
+    /// observed yet is resolved the same way, which is what lets the DHCP
+    /// client ask about the interface it is about to configure.
+    pub fn resolve(config: &Config, iface: &Observed) -> (Self, Option<String>) {
+        let Some(file) = config.file_for(&iface.name, iface.mac) else {
+            return (
+                Self {
+                    name: iface.name.clone(),
+                    mac: iface.mac,
+                    description: None,
+                    mode: Mode::Dhcp,
+                    addresses: Vec::new(),
+                    gateway: None,
+                    routes: Vec::new(),
+                    dns: Vec::new(),
+                    configured: false,
+                    source: None,
+                },
+                Some(format!(
+                    "{}: no configuration matches, using DHCP",
+                    iface.name
+                )),
+            );
+        };
+
+        let mode = if file.network.uses_dhcp() {
+            Mode::Dhcp
+        } else {
+            Mode::Static
+        };
+
+        (
+            Self {
+                name: iface.name.clone(),
+                mac: iface.mac,
+                description: file.network.description.clone(),
+                mode,
+                addresses: file.network.addresses.clone(),
+                gateway: file.network.gateway,
+                routes: file.routes.clone(),
+                dns: file.network.dns.clone(),
+                configured: true,
+                source: file.source.clone(),
+            },
+            None,
+        )
+    }
 }
 
 /// A write to the network stack: one control file, one value.
@@ -123,44 +174,11 @@ impl Plan {
         let mut interfaces = Vec::with_capacity(observed.len());
 
         for iface in observed {
-            let Some(file) = config.file_for(&iface.name, iface.mac) else {
-                warnings.push(format!(
-                    "{}: no configuration matches, using DHCP",
-                    iface.name
-                ));
-                interfaces.push(InterfacePlan {
-                    name: iface.name.clone(),
-                    mac: iface.mac,
-                    description: None,
-                    mode: Mode::Dhcp,
-                    addresses: Vec::new(),
-                    gateway: None,
-                    routes: Vec::new(),
-                    dns: Vec::new(),
-                    configured: false,
-                    source: None,
-                });
-                continue;
-            };
-
-            let mode = if file.network.uses_dhcp() {
-                Mode::Dhcp
-            } else {
-                Mode::Static
-            };
-
-            interfaces.push(InterfacePlan {
-                name: iface.name.clone(),
-                mac: iface.mac,
-                description: file.network.description.clone(),
-                mode,
-                addresses: file.network.addresses.clone(),
-                gateway: file.network.gateway,
-                routes: file.routes.clone(),
-                dns: file.network.dns.clone(),
-                configured: true,
-                source: file.source.clone(),
-            });
+            let (resolved, warning) = InterfacePlan::resolve(config, iface);
+            if let Some(warning) = warning {
+                warnings.push(warning);
+            }
+            interfaces.push(resolved);
         }
 
         Self {
@@ -511,6 +529,40 @@ mod tests {
         assert_eq!(
             write.render("/netcfg"),
             "write /netcfg/route/add default via 10.0.0.1"
+        );
+    }
+
+    #[test]
+    fn one_interface_is_resolved_by_the_same_rule_as_the_whole_plan() {
+        let config = Config::from_files(vec![parse(
+            "[Match]\nName=eth0\n\n[Network]\nAddress=192.168.1.50/24\n",
+        )]);
+
+        // The interface the plan resolves, and the one the daemon resolves for
+        // a single question: the same rule, one interface at a time.
+        let observed = eth0();
+        let plan = Plan::build(&config, &observed);
+        let (resolved, warning) = InterfacePlan::resolve(&config, &observed[0]);
+        assert_eq!(resolved, plan.interfaces[0]);
+        assert!(warning.is_none());
+
+        // An interface no file matches is left to DHCP, and the warning says
+        // so: "no file matched" and "a file said DHCP" are different
+        // situations for whoever is reading the log.
+        let missing = Observed {
+            name: "wlan0".to_owned(),
+            mac: None,
+        };
+        let (resolved, warning) = InterfacePlan::resolve(&config, &missing);
+        assert_eq!(resolved.mode, Mode::Dhcp);
+        assert!(!resolved.is_configured());
+        assert_eq!(
+            warning.as_deref(),
+            Some("wlan0: no configuration matches, using DHCP")
+        );
+        assert_eq!(
+            resolved,
+            Plan::build(&config, std::slice::from_ref(&missing)).interfaces[0]
         );
     }
 }

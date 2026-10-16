@@ -1,22 +1,24 @@
 //! The request protocol spoken over `/scheme/networkd`.
 //!
 //! Control is "write a request, read the response": a client opens the control
-//! file of the scheme (`apply`), writes a single request line and reads the
-//! response line back from the same file descriptor. The grammar is text so
+//! file of the scheme (`apply`, `dhcp`), writes a single request line and reads
+//! the response line back from the same file descriptor. The grammar is text so
 //! that a daemon that has to say "the configuration changed" can do it with
 //! plain file I/O.
 //!
 //! ```text
 //! apply
+//! dhcp eth0
 //! ```
 //!
 //! A response is `ok <message>` or `err <message>`. For `apply` the message
 //! says what happened to the stack, in the words of [`Outcome`]:
-//! `applied <n> <netcfg>\t<config>` or `unchanged <netcfg>\t<config>`. The two
-//! paths are in the answer because a client that named its own configuration or
-//! its own stack has to be able to tell whether the daemon is talking about
-//! them — and they are separated by a tab because a path may contain spaces and
-//! neither of them may be cut in half.
+//! `applied <n> <netcfg>\t<config>` or `unchanged <netcfg>\t<config>`. For
+//! `dhcp` it says what the configuration decided about one interface, in the
+//! words of [`Decision`]. The paths are in the answers because a client that
+//! named its own configuration or its own stack has to be able to tell whether
+//! the daemon is talking about them — and they are separated by a tab because a
+//! path may contain spaces and neither of them may be cut in half.
 //!
 //! Reading needs no request: the scheme serves the live report as the file
 //! `status` (see [`crate::render::render_status_document`]).
@@ -24,6 +26,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::plan::{InterfacePlan, Mode};
 use crate::state::Application;
 
 /// Returned when a request or a response is not understood.
@@ -43,6 +46,11 @@ impl std::error::Error for ProtocolError {}
 pub enum Request {
     /// Read the configuration, and write what it says to the stack.
     Apply,
+    /// Ask what the configuration decides about the address of one interface.
+    Dhcp {
+        /// The interface being asked about (`eth0`).
+        iface: String,
+    },
 }
 
 impl Request {
@@ -50,6 +58,7 @@ impl Request {
     pub fn verb(&self) -> &'static str {
         match self {
             Self::Apply => "apply",
+            Self::Dhcp { .. } => "dhcp",
         }
     }
 
@@ -65,13 +74,133 @@ impl Request {
 
         match line {
             "apply" | "sync" | "reload" | "update" => Ok(Self::Apply),
-            _ => Err(ProtocolError(format!("unknown request {line:?}"))),
+            _ => match line.split_whitespace().collect::<Vec<_>>().as_slice() {
+                ["dhcp"] => Err(ProtocolError("dhcp needs an interface".to_owned())),
+                ["dhcp", iface] if is_interface_name(iface) => Ok(Self::Dhcp {
+                    iface: (*iface).to_owned(),
+                }),
+                ["dhcp", iface] => {
+                    Err(ProtocolError(format!("{iface:?} is not an interface name")))
+                }
+                ["dhcp", ..] => Err(ProtocolError(format!("dhcp takes one interface: {line:?}"))),
+                _ => Err(ProtocolError(format!("unknown request {line:?}"))),
+            },
         }
     }
 
     /// Renders the request the way a client writes it.
     pub fn encode(&self) -> String {
-        format!("{}\n", self.verb())
+        match self {
+            Self::Apply => "apply\n".to_owned(),
+            Self::Dhcp { iface } => format!("dhcp {iface}\n"),
+        }
+    }
+}
+
+/// Whether a word can be the name of an interface.
+///
+/// The name is used as a path element of the stack (`ifaces/<name>/mac`), so a
+/// name that could walk out of it is not a name: `..` and anything with a
+/// separator in it describes a file, not an interface.
+pub fn is_interface_name(word: &str) -> bool {
+    !word.is_empty() && word != "." && word != ".." && !word.contains(['/', '\0'])
+}
+
+/// What the configuration decides about the address of one interface.
+///
+/// This is the question the DHCP client asks at boot: an interface the
+/// configuration leaves to DHCP gets its address from a server, and a client
+/// that ran for an interface the configuration addresses itself would write
+/// over the address the configuration gave it. The file that decided is in the
+/// answer — when one did — because "DHCP=yes in this file" and "no file
+/// matched" are different situations for whoever is reading the log.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Decision {
+    /// The interface this is about.
+    pub iface: String,
+    /// The file of the configuration that decided, when one did.
+    pub source: Option<PathBuf>,
+    /// How the address is decided.
+    pub mode: Mode,
+}
+
+impl Decision {
+    /// What the configuration decided about one interface.
+    pub fn of(plan: &InterfacePlan) -> Self {
+        Self {
+            iface: plan.name.clone(),
+            source: plan.source.clone(),
+            mode: plan.mode,
+        }
+    }
+
+    /// The interface this is about.
+    pub fn iface(&self) -> &str {
+        &self.iface
+    }
+
+    /// The file that decided, when one did.
+    pub fn source(&self) -> Option<&Path> {
+        self.source.as_deref()
+    }
+
+    /// How the address is decided.
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Whether this is the answer to a question about this interface.
+    pub fn about(&self, iface: &str) -> bool {
+        self.iface == iface
+    }
+
+    /// The message the client reads, which is how the decision travels.
+    ///
+    /// The file comes before the mode so that a decision no file made keeps
+    /// its fields: an empty file field in the middle survives the line being
+    /// trimmed, and a field at the end would not.
+    pub fn encode(&self) -> String {
+        format!(
+            "dhcp\t{}\t{}\t{}",
+            self.iface,
+            self.source
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            self.mode.as_str(),
+        )
+    }
+
+    /// Reads back the message of a response.
+    pub fn parse(message: &str) -> Result<Self, ProtocolError> {
+        let mut fields = message.trim().split('\t');
+        let malformed = || ProtocolError(format!("malformed answer {:?}", message.trim()));
+
+        if fields.next().ok_or_else(malformed)? != "dhcp" {
+            return Err(malformed());
+        }
+
+        let iface = fields.next().ok_or_else(malformed)?;
+        let source = fields.next().ok_or_else(malformed)?;
+        let mode = match fields.next().ok_or_else(malformed)? {
+            "dhcp" => Mode::Dhcp,
+            "static" => Mode::Static,
+            _ => return Err(malformed()),
+        };
+
+        if fields.next().is_some() || iface.is_empty() || !is_interface_name(iface) {
+            return Err(malformed());
+        }
+
+        Ok(Self {
+            iface: iface.to_owned(),
+            source: if source.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(source))
+            },
+            mode,
+        })
     }
 }
 
@@ -360,5 +489,102 @@ mod tests {
         assert_eq!(parse_response("err no stack\n").unwrap_err().0, "no stack");
         assert!(parse_response("").is_err());
         assert!(parse_response("whatever\n").is_err());
+    }
+
+    #[test]
+    fn the_dhcp_question_names_the_interface_it_is_about() {
+        let request = Request::Dhcp {
+            iface: "eth0".to_owned(),
+        };
+        assert_eq!(request.verb(), "dhcp");
+        assert_eq!(request.encode(), "dhcp eth0\n");
+        assert_eq!(Request::parse(&request.encode()).unwrap(), request);
+        assert_eq!(
+            Request::parse("  dhcp wlan0 \n").unwrap(),
+            Request::Dhcp {
+                iface: "wlan0".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn a_dhcp_question_about_a_file_is_not_a_question_about_an_interface() {
+        // The name is used as a path element of the stack, so a name that
+        // could walk out of it is not a name.
+        assert!(Request::parse("dhcp").unwrap_err().0.contains("interface"));
+        for line in [
+            "dhcp eth0 wlan0",
+            "dhcp ..",
+            "dhcp .",
+            "dhcp ../eth0",
+            "dhcp a/b",
+            "dhcp\t",
+        ] {
+            assert!(Request::parse(line).is_err(), "{line:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn a_decision_says_what_the_configuration_decided() {
+        let decision = Decision {
+            iface: "eth0".to_owned(),
+            source: Some(PathBuf::from("/etc/networkd/10-eth0.network")),
+            mode: Mode::Static,
+        };
+        assert_eq!(
+            decision.encode(),
+            "dhcp\teth0\t/etc/networkd/10-eth0.network\tstatic"
+        );
+        assert_eq!(Decision::parse(&decision.encode()).unwrap(), decision);
+        assert!(decision.about("eth0"));
+        assert!(!decision.about("wlan0"));
+        assert_eq!(decision.mode(), Mode::Static);
+        assert_eq!(
+            decision.source(),
+            Some(Path::new("/etc/networkd/10-eth0.network"))
+        );
+
+        // A decision no file made has no source, and the field stays where it
+        // is: "a file said DHCP" and "no file matched" are different answers,
+        // and a field at the end of the line would be trimmed away.
+        let decision = Decision {
+            iface: "wlan0".to_owned(),
+            source: None,
+            mode: Mode::Dhcp,
+        };
+        assert_eq!(decision.encode(), "dhcp\twlan0\t\tdhcp");
+        assert_eq!(Decision::parse(&decision.encode()).unwrap(), decision);
+        assert_eq!(decision.source(), None);
+
+        // The decision travels inside a response, which is how a client reads
+        // it, and a path with a space in it survives the trip.
+        let decision = Decision {
+            iface: "eth0".to_owned(),
+            source: Some(PathBuf::from("/etc/network files/10-eth0.network")),
+            mode: Mode::Static,
+        };
+        let response = format_response(&Ok(decision.encode()));
+        let message = parse_response(&response).unwrap();
+        assert_eq!(Decision::parse(&message).unwrap(), decision);
+    }
+
+    #[test]
+    fn a_malformed_decision_is_not_an_answer() {
+        for message in [
+            "",
+            "dhcp",
+            "dhcp\teth0",
+            "dhcp\teth0\t/etc/networkd/10-eth0.network",
+            "dhcp\teth0\t/etc/networkd/10-eth0.network\tbanana",
+            "dhcp\teth0\t/etc/networkd/10-eth0.network\tstatic\textra",
+            "dhcp\t\t/etc/networkd/10-eth0.network\tstatic",
+            "dhcp\t../eth0\t\tstatic",
+            "applied\t3\t/scheme/netcfg\t/etc/networkd",
+        ] {
+            assert!(
+                Decision::parse(message).is_err(),
+                "{message:?} was accepted"
+            );
+        }
     }
 }

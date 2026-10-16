@@ -5,7 +5,7 @@
 //! watcher writes, one at a time, so no two applications of the configuration
 //! can disagree about what the stack already has.
 
-use crate::protocol::{Outcome, ProtocolError, Request};
+use crate::protocol::{Decision, Outcome, ProtocolError, Request};
 use crate::render::render_status_document;
 use crate::state::{lock, SharedNetworkd};
 
@@ -34,12 +34,18 @@ impl Service {
     pub fn handle(&self, request: &Request) -> Result<String, ProtocolError> {
         let mut networkd = lock(&self.state);
 
-        let application = match request {
-            Request::Apply => networkd.apply(),
+        match request {
+            Request::Apply => {
+                let application = networkd.apply().map_err(|err| ProtocolError(err.0))?;
+                Ok(Outcome::of(&application).encode())
+            }
+            Request::Dhcp { iface } => {
+                let plan = networkd
+                    .plan_for(iface)
+                    .map_err(|err| ProtocolError(err.0))?;
+                Ok(Decision::of(&plan).encode())
+            }
         }
-        .map_err(|err| ProtocolError(err.0))?;
-
-        Ok(Outcome::of(&application).encode())
     }
 
     /// What the file `status` of the scheme says.
@@ -68,6 +74,7 @@ mod tests {
 
     use super::*;
     use crate::netcfg::Netcfg;
+    use crate::plan::Mode;
     use crate::state::{shared, Networkd};
 
     fn scratch(name: &str) -> PathBuf {
@@ -243,6 +250,75 @@ mod tests {
             .unwrap()
             .starts_with("10.0.0.2/8\n"));
         assert!(watcher.look().unwrap().is_none(), "already applied");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_decision_of_one_interface_is_what_the_configuration_says() {
+        let dir = scratch("decision");
+        let (service, _, config_dir) = service(
+            &dir,
+            Some("[Match]\nName=eth0\n\n[Network]\nAddress=192.168.1.50/24\n"),
+        );
+
+        let ask = |iface: &str| {
+            Decision::parse(
+                &service
+                    .handle(&Request::Dhcp {
+                        iface: iface.to_owned(),
+                    })
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+
+        // The interface the configuration addresses is not left to DHCP, and
+        // the file that decided is named.
+        let decision = ask("eth0");
+        assert!(decision.about("eth0"));
+        assert_eq!(decision.mode(), Mode::Static);
+        assert_eq!(
+            decision.source(),
+            Some(config_dir.join("10-eth0.network").as_path())
+        );
+
+        // A file that says DHCP leaves it to the server — and the answer names
+        // the file, so it is not confused with the interface below.
+        fs::write(
+            config_dir.join("10-eth0.network"),
+            "[Match]\nName=eth0\n\n[Network]\nDHCP=yes\n",
+        )
+        .unwrap();
+        let decision = ask("eth0");
+        assert_eq!(decision.mode(), Mode::Dhcp);
+        assert_eq!(
+            decision.source(),
+            Some(config_dir.join("10-eth0.network").as_path())
+        );
+
+        // An interface no file matches is left to DHCP too, and no file is
+        // named: the answer says which of the two situations this is.
+        let decision = ask("wlan0");
+        assert_eq!(decision.mode(), Mode::Dhcp);
+        assert_eq!(decision.source(), None);
+        assert!(!decision.about("eth0"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_question_about_a_configuration_that_cannot_be_read_is_refused() {
+        let dir = scratch("decision-bad");
+        let (service, _, config_dir) = service(&dir, None);
+        fs::write(config_dir.join("10-eth0.network"), [0xff, 0xfe]).unwrap();
+
+        let err = service
+            .handle(&Request::Dhcp {
+                iface: "eth0".to_owned(),
+            })
+            .unwrap_err();
+        assert!(err.0.contains("10-eth0.network"), "{err}");
 
         let _ = fs::remove_dir_all(dir);
     }

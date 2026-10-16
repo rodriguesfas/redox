@@ -15,7 +15,8 @@ use std::process::{Command, Output};
 
 use networkd::client::exchange;
 use networkd::netcfg::Netcfg;
-use networkd::protocol::{format_response, Outcome, ProtocolError, Request};
+use networkd::plan::Mode;
+use networkd::protocol::{format_response, Decision, Outcome, ProtocolError, Request};
 use networkd::service::Service;
 use networkd::state::{shared, Networkd};
 use networkd::watch::{Watcher, DEFAULT_INTERVAL};
@@ -329,6 +330,67 @@ fn nothing_is_asked_of_a_daemon_when_the_paths_were_named() {
         fs::read_to_string(netcfg.join("ifaces/eth0/addr/set")).unwrap(),
         "192.168.1.50/24\n"
     );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_dhcp_client_asks_the_daemon_who_decides_the_address() {
+    let (dir, netcfg) = stack_of("decide", true);
+    let config = configuration(
+        &dir,
+        "10-eth0.network",
+        "[Match]\nName=eth0\n\n[Network]\nAddress=192.168.1.50/24\n",
+    );
+
+    let service = service_of(&config, &netcfg);
+    let ask_dhcp = |iface: &str| -> io::Result<Decision> {
+        let message = ask(
+            &service,
+            Request::Dhcp {
+                iface: iface.to_owned(),
+            },
+        )?;
+        Decision::parse(&message).map_err(|err| io::Error::other(err.0))
+    };
+    let file = config.join("10-eth0.network");
+
+    // The interface the configuration addresses is not left to DHCP: a client
+    // that ran anyway would write a lease over the address the configuration
+    // gave it, and the answer names the file that decided.
+    let decision = ask_dhcp("eth0").unwrap();
+    assert!(decision.about("eth0"));
+    assert_eq!(decision.mode(), Mode::Static);
+    assert_eq!(decision.source(), Some(file.as_path()));
+
+    // A file that says DHCP leaves the decision to the server, and the file is
+    // still the one that decided.
+    fs::write(
+        config.join("10-eth0.network"),
+        "[Match]\nName=eth0\n\n[Network]\nDHCP=yes\n",
+    )
+    .unwrap();
+    let decision = ask_dhcp("eth0").unwrap();
+    assert_eq!(decision.mode(), Mode::Dhcp);
+    assert_eq!(decision.source(), Some(file.as_path()));
+
+    // An interface no file matches is left to DHCP too — the way a system with
+    // no configuration comes up — and then there is no file to name.
+    let decision = ask_dhcp("wlan0").unwrap();
+    assert_eq!(decision.mode(), Mode::Dhcp);
+    assert_eq!(decision.source(), None);
+
+    // A configuration that cannot be read is refused, and the refusal reaches
+    // the client: a DHCP client that cannot be told must not decide on its own.
+    fs::write(config.join("10-eth0.network"), [0xff, 0xfe]).unwrap();
+    let error = ask(
+        &service,
+        Request::Dhcp {
+            iface: "eth0".to_owned(),
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("10-eth0.network"), "{error}");
 
     let _ = fs::remove_dir_all(dir);
 }

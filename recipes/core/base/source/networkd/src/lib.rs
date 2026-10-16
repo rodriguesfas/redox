@@ -22,7 +22,10 @@
 //!
 //! The daemon `networkd` owns the write: a boot starts it as a scheme service,
 //! and `networkctl apply` asks it when it is running, so the stack has one writer
-//! and a plan read before a write cannot be applied after it.
+//! and a plan read before a write cannot be applied after it. The daemon also
+//! answers who owns the DHCP client: the client asks it what the configuration
+//! decides about the interface it is about to configure, so a lease cannot write
+//! over an address the configuration gave.
 
 #![deny(clippy::precedence)]
 
@@ -46,8 +49,10 @@ pub use cli::{parse_args, parse_env_args, Cli, CliError, Command, ENV_CONFIG, US
 pub use client::{writes_through_the_daemon, Client, DEFAULT_SCHEME, ENV_SCHEME};
 pub use config::{Config, ConfigError, Match, Network, NetworkFile, Route, CONFIG_DIR, FILE_EXT};
 pub use netcfg::{Netcfg, NetcfgError, DEFAULT_ROOT, ENV_ROOT};
-pub use plan::{Mode, Observed, Plan, Write};
-pub use protocol::{format_response, parse_response, Outcome, ProtocolError, Request};
+pub use plan::{InterfacePlan, Mode, Observed, Plan, Write};
+pub use protocol::{
+    format_response, is_interface_name, parse_response, Decision, Outcome, ProtocolError, Request,
+};
 pub use render::{
     render_applied, render_config, render_delegated, render_interfaces, render_status,
     render_status_document, summarize,

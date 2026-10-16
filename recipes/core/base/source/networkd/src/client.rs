@@ -14,7 +14,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::cli::Cli;
-use crate::protocol::{parse_response, Outcome, Request};
+use crate::protocol::{parse_response, Decision, Outcome, Request};
 
 /// Where the network daemon is mounted.
 pub const DEFAULT_SCHEME: &str = "/scheme/networkd";
@@ -77,19 +77,39 @@ impl Client {
     /// verdict — including a refusal, which a caller has to report instead of
     /// quietly doing the work itself.
     pub fn request_if_mounted(&self, request: &Request) -> Option<io::Result<Outcome>> {
-        let mut file = match File::options()
-            .read(true)
-            .write(true)
-            .open(self.scheme.join(request.verb()))
-        {
-            Ok(file) => file,
-            Err(_) => return None,
+        Some(
+            self.message_if_mounted(request)?.and_then(|message| {
+                Outcome::parse(&message).map_err(|err| io::Error::other(err.0))
+            }),
+        )
+    }
+
+    /// Asks what the configuration decides about one interface.
+    ///
+    /// This is the question the DHCP client asks at boot, before it configures
+    /// anything: an interface the configuration addresses itself is not one a
+    /// lease may write over.
+    pub fn dhcp(&self, iface: &str) -> io::Result<Decision> {
+        let request = Request::Dhcp {
+            iface: iface.to_owned(),
+        };
+
+        answer_decision(&self.request(&request)?)
+    }
+
+    /// Asks what the configuration decides, if a daemon answers.
+    ///
+    /// `None` is "there is nothing to ask", which is what a system without the
+    /// daemon looks like — a rescue shell has no configuration to consult, and
+    /// the client that asks is the one that decides then.
+    pub fn dhcp_if_mounted(&self, iface: &str) -> Option<io::Result<Decision>> {
+        let request = Request::Dhcp {
+            iface: iface.to_owned(),
         };
 
         Some(
-            exchange(&mut file, &request.encode()).and_then(|message| {
-                Outcome::parse(&message).map_err(|err| io::Error::other(err.0))
-            }),
+            self.message_if_mounted(&request)?
+                .and_then(|message| answer_decision(&message)),
         )
     }
 
@@ -101,6 +121,17 @@ impl Client {
     /// The live report the daemon serves, which is what it sees right now.
     pub fn status_report(&self) -> io::Result<String> {
         self.read("status")
+    }
+
+    /// The message of a request, if the daemon is there to answer it.
+    fn message_if_mounted(&self, request: &Request) -> Option<io::Result<String>> {
+        let mut file = File::options()
+            .read(true)
+            .write(true)
+            .open(self.scheme.join(request.verb()))
+            .ok()?;
+
+        Some(exchange(&mut file, &request.encode()))
     }
 }
 
@@ -117,6 +148,11 @@ pub fn writes_through_the_daemon(cli: &Cli) -> bool {
 /// Reads the outcome out of a response message.
 fn answer(message: &str) -> io::Result<Outcome> {
     Outcome::parse(message).map_err(|err| io::Error::other(err.0))
+}
+
+/// Reads the decision out of a response message.
+fn answer_decision(message: &str) -> io::Result<Decision> {
+    Decision::parse(message).map_err(|err| io::Error::other(err.0))
 }
 
 /// Writes a request and reads the response back from the same file.
@@ -137,6 +173,7 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     use super::*;
+    use crate::plan::Mode;
 
     fn scratch(name: &str) -> PathBuf {
         let dir =
@@ -252,5 +289,66 @@ mod tests {
             }
         }
         String::from_utf8(request).unwrap()
+    }
+
+    #[test]
+    fn a_question_the_daemon_answers_comes_back_as_a_decision() {
+        let (mut client_end, mut daemon_end) = UnixStream::pair().unwrap();
+        std::thread::spawn(move || {
+            assert_eq!(read_line(&mut daemon_end), "dhcp eth0\n");
+            daemon_end
+                .write_all(b"ok dhcp\teth0\t/etc/networkd/10-eth0.network\tstatic\n")
+                .unwrap();
+            daemon_end.flush().unwrap();
+        });
+
+        let message = exchange(&mut client_end, "dhcp eth0\n").unwrap();
+        let decision = answer_decision(&message).unwrap();
+        assert!(decision.about("eth0"));
+        assert_eq!(decision.mode(), Mode::Static);
+        assert_eq!(
+            decision.source(),
+            Some(Path::new("/etc/networkd/10-eth0.network"))
+        );
+    }
+
+    #[test]
+    fn a_decision_no_file_made_survives_the_response_line() {
+        // The source field is empty in the middle of the answer: a client has
+        // to be able to tell "a file said DHCP" from "no file matched".
+        let (mut client_end, mut daemon_end) = UnixStream::pair().unwrap();
+        std::thread::spawn(move || {
+            assert_eq!(read_line(&mut daemon_end), "dhcp wlan0\n");
+            let _ = daemon_end.write_all(b"ok dhcp\twlan0\t\tdhcp\n");
+            let _ = daemon_end.flush();
+        });
+
+        let message = exchange(&mut client_end, "dhcp wlan0\n").unwrap();
+        let decision = answer_decision(&message).unwrap();
+        assert_eq!(decision.mode(), Mode::Dhcp);
+        assert_eq!(decision.source(), None);
+    }
+
+    #[test]
+    fn a_question_the_daemon_refuses_is_an_error() {
+        let (mut client_end, mut daemon_end) = UnixStream::pair().unwrap();
+        std::thread::spawn(move || {
+            assert_eq!(read_line(&mut daemon_end), "dhcp eth0\n");
+            let _ =
+                daemon_end.write_all(b"err cannot read 10-eth0.network: the file is not text\n");
+            let _ = daemon_end.flush();
+        });
+
+        let error = exchange(&mut client_end, "dhcp eth0\n").unwrap_err();
+        assert!(error.to_string().contains("10-eth0.network"), "{error}");
+    }
+
+    #[test]
+    fn there_is_nothing_to_ask_a_daemon_that_is_not_there() {
+        let dir = scratch("no-daemon-dhcp");
+        let client = Client::new(dir.join("scheme"));
+
+        assert!(client.dhcp("eth0").is_err());
+        assert!(client.dhcp_if_mounted("eth0").is_none());
     }
 }
