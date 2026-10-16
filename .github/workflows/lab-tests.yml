@@ -23,6 +23,12 @@ jobs:
           toolchain: nightly-2026-05-24
           components: rust-src, llvm-tools, clippy, rustfmt
 
+      # O inputd depende do orbclient, que no host linka contra SDL2.
+      - name: libSDL2 para o orbclient
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsdl2-dev
+
       # O workspace recipes/core/base/source ee parcial no fork: adicionamos apenas
       # drivers/Cargo.toml/Makefile/net. Os outros membros (audiod etc.) moram em base.git —
       # cloneiamos duro e o nosso por cima (sem --delete preserva nossas pastas).
@@ -36,11 +42,11 @@ jobs:
           ls recipes/core/base/source/audiod/Cargo.toml
           grep -c ath9k_net recipes/core/base/source/Cargo.toml
 
-      - name: Suite de testes (drivers WiFi/BT/i2c/storage/audio + journald/logind/networkd/resolved/dhcpd)
+      - name: Suite de testes (drivers WiFi/BT/i2c/storage/audio + journald/logind/networkd/resolved/dhcpd/inputd)
         working-directory: recipes/core/base/source
         run: |
           set -e
-          PKGS="iwlwifi rtw88 mt7921d ath9k net80211 btusd iwlwifi_net i2c-hid i2c-dwd driver-block nvmed wpa_supplicant i2c-hidd acpid journald logind networkd resolved dhcpd"
+          PKGS="iwlwifi rtw88 mt7921d ath9k net80211 btusd iwlwifi_net i2c-hid i2c-dwd driver-block nvmed wpa_supplicant i2c-hidd acpid journald logind networkd resolved dhcpd inputd"
           for pkg in $PKGS; do
             echo "=== $pkg ==="
             cargo test -p "$pkg"
