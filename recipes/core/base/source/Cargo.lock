@@ -349,6 +349,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "bcm2711-genetd"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "daemon",
+ "driver-network",
+ "fdt 0.2.0-alpha1",
+ "libredox",
+ "redox_event",
+ "redox_syscall 0.9.4",
+]
+
+[[package]]
 name = "bcm2835-sdhcid"
 version = "0.1.0"
 dependencies = [

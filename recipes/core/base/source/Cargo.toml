@@ -66,6 +66,7 @@ members = [
     "drivers/net/mt7921d",
     "drivers/net/mt7921d_net",
     "drivers/net/virtio-netd",
+    "drivers/net/bcmgenetd",
     "drivers/net/net80211",
 
     "drivers/redoxerd",

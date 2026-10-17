@@ -1,7 +1,7 @@
 [source]
 git = "https://gitlab.redox-os.org/redox-os/base.git"
-rev = "8fdf4e4bf9a61b240aaf49e23a6541682cf30d6c"
-patches = ["nvmed-aarch64-poll-fence.patch"]
+rev = "9927872090bc21cfe83191b333f2e738c7d6c084"
+patches = []
 
 [build]
 template = "custom"

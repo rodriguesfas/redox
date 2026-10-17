@@ -1,9 +1,11 @@
 use std::cell::UnsafeCell;
 use std::ptr;
+use std::sync::atomic::{Ordering, fence};
 
 use common::dma::Dma;
 use common::io::{Io, Mmio};
 use syscall::Result;
+
 
 /// A submission queue entry.
 #[derive(Clone, Copy, Debug, Default)]
@@ -73,6 +75,7 @@ impl NvmeCompQueue {
     /// Get a new completion queue entry, or return None if no entry is available yet.
     pub(crate) fn complete(&mut self) -> Option<NvmeComp> {
         let entry = unsafe { ptr::read_volatile(self.data[usize::from(self.head)].get()) };
+        fence(Ordering::Acquire);
 
         if ((entry.status & 1) == 1) == self.phase {
             self.head = (self.head + 1) % (self.data.len() as u16);
@@ -99,6 +102,7 @@ impl NvmeCompQueue {
 
     pub fn kick(&mut self) {
         if self.last_doorbell != self.head {
+            fence(Ordering::Release);
             self.doorbell.write(u32::from(self.head));
             self.last_doorbell = self.head;
         }
@@ -129,7 +133,11 @@ impl NvmeCmdQueue {
         self.head == self.tail
     }
     pub fn is_full(&self) -> bool {
-        self.head == self.tail + 1
+        // Circular buffer of `len` slots: full when advancing tail would land on head.
+        // The previous `head == tail + 1` missed the wrap (tail == len-1, head == 0),
+        // which let `submit_unchecked` overwrite an entry the controller had not
+        // consumed yet, silently losing the command.
+        self.head == ((self.tail + 1) & (self.data.len() as u16 - 1))
     }
 
     /// Add a new submission command entry to the queue. The caller must ensure that the queue have free
@@ -141,6 +149,7 @@ impl NvmeCmdQueue {
     }
 
     pub fn kick(&mut self) {
+        fence(Ordering::Release);
         self.doorbell.write(u32::from(self.tail));
     }
 }
