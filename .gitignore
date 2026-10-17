@@ -18,6 +18,8 @@
 source
 source.tmp
 source-new
+# AIOS: dados do bundle de modelos (gguf + tokenizer), entrada de build local
+/aios-models-data
 source-old
 source.tar
 source.tar.tmp

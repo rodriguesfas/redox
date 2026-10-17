@@ -137,8 +137,9 @@ fn daemon(daemon: daemon::Daemon, mut pcid_handle: PciFunctionHandle) -> ! {
         executor.register_external_event(time_handle.as_raw_fd() as usize, event::EventFlags::READ),
     );
 
-    // Try to init namespaces for 5 seconds
-    time_arm(&mut time_handle, 5).expect("failed to arm timer");
+    // Try to init namespaces for 30 seconds (aarch64 under QEMU TCG is very
+    // slow: the controller bring-up can take seconds per admin command)
+    time_arm(&mut time_handle, 30).expect("failed to arm timer");
     let namespaces = executor.block_on(async {
         let namespaces_future = nvme.init_with_queues();
         let time_future = time_events.as_mut().next();

@@ -1,10 +1,11 @@
 use std::process;
 
-use driver_block::{DiskScheme, ExecutorTrait, TrivialExecutor};
+use driver_block::{Disk, DiskScheme, ExecutorTrait, TrivialExecutor};
 use event::{EventFlags, RawEventQueue};
 use fdt::Fdt;
 
 mod sd;
+mod sdhci;
 
 #[cfg(target_os = "redox")]
 fn get_dtb() -> Vec<u8> {
@@ -25,79 +26,9 @@ fn main() {
     daemon::Daemon::new(daemon);
 }
 
-fn daemon(daemon: daemon::Daemon) -> ! {
-    common::init();
-    let dtb_data = get_dtb();
-    println!("read from OS, len = {}", dtb_data.len());
-    if dtb_data.len() == 0 {
-        process::exit(0);
-    }
-
-    let fdt = Fdt::new(&dtb_data).unwrap();
-    println!("DTB model = {}", fdt.root().model());
-    let with = ["brcm,bcm2835-sdhci"];
-    let compat_node = fdt.find_compatible(&with).unwrap();
-    let reg = compat_node.reg().unwrap().next().unwrap();
-    let reg_size = reg.size.unwrap();
-    let mut reg_addr = reg.starting_address as usize;
-    println!(
-        "DeviceMemory start = 0x{:08x}, size = 0x{:08x}",
-        reg_addr, reg_size
-    );
-    if let Some(mut ranges) = fdt.find_node("/soc").and_then(|f| f.ranges()) {
-        let range = ranges
-            .find(|f| f.child_bus_address <= reg_addr && reg_addr - f.child_bus_address < f.size)
-            .expect("Couldn't find device range in /soc/@ranges");
-        reg_addr = range.parent_bus_address + (reg_addr - range.child_bus_address);
-        println!(
-            "DeviceMemory remapped onto CPU address space: start = 0x{:08x}, size = 0x{:08x}",
-            reg_addr, reg_size
-        );
-    }
-
-    let addr = unsafe {
-        common::physmap(
-            reg_addr,
-            reg_size,
-            common::Prot::RW,
-            common::MemoryType::DeviceMemory,
-        )
-        .expect("bcm2835-sdhcid: failed to map address") as usize
-    };
-    println!(
-        "ioremap 0x{:08x} to 0x{:08x} 2222",
-        reg.starting_address as usize, addr
-    );
-    let mut sdhci = sd::SdHostCtrl::new(addr);
-    unsafe {
-        sdhci.init();
-        /*
-        let mut buf1 = [0u32; 512];
-        sdhci.sd_readblock(1, &mut buf1, 1);
-        println!("readblock {:?}", buf1);
-        buf1[0] = 0xdead_0000;
-        buf1[1] = 0xdead_0000;
-        buf1[2] = 0x0000_dead;
-        buf1[3] = 0x0000_dead;
-        sdhci.sd_writeblock(1, &buf1, 1);
-        sdhci.sd_readblock(1, &mut buf1, 1);
-        println!("readblock {:?}", buf1);
-        */
-        /*
-        let mut buf1 = [0u8; 512];
-        sdhci.read(1, &mut buf1);
-        println!("readblock {:?}", buf1);
-        buf1[0] = 0xde;
-        buf1[1] = 0xad;
-        buf1[2] = 0xde;
-        buf1[3] = 0xad;
-        sdhci.write(1, &buf1);
-        sdhci.read(1, &mut buf1);
-        println!("readblock {:?}", buf1);
-        */
-    }
-
-    let mut disks = vec![sdhci];
+/// Serve the disk scheme with the given controller until the process is killed.
+fn run_scheme<D: Disk + 'static>(daemon: daemon::Daemon, disk: D) -> ! {
+    let mut disks = vec![disk];
     let mut scheme = DiskScheme::new(
         Some(daemon),
         "disk.mmc".to_string(),
@@ -125,4 +56,85 @@ fn daemon(daemon: daemon::Daemon) -> ! {
         }
     }
     process::exit(0);
+}
+
+fn daemon(daemon: daemon::Daemon) -> ! {
+    common::init();
+    let dtb_data = get_dtb();
+    println!("read from OS, len = {}", dtb_data.len());
+    if dtb_data.len() == 0 {
+        process::exit(0);
+    }
+
+    let fdt = Fdt::new(&dtb_data).unwrap();
+    println!("DTB model = {}", fdt.root().model());
+
+    // The Raspberry Pi 4 (BCM2711) has the SD card on the EMMC2 controller,
+    // which implements the standard SDHCI register set. The Raspberry Pi 3
+    // uses the legacy controller with the proprietary BCM2835 layout.
+    let (compat_node, emmc2) = if let Some(node) = fdt.find_compatible(&["brcm,bcm2711-emmc2"]) {
+        (node, true)
+    } else if let Some(node) = fdt.find_compatible(&["brcm,bcm2835-sdhci"]) {
+        (node, false)
+    } else {
+        println!("bcm2835-sdhcid: no supported SD host controller in the device tree");
+        process::exit(1);
+    };
+
+    let reg = compat_node.reg().unwrap().next().unwrap();
+    let reg_size = reg.size.unwrap();
+    let mut reg_addr = reg.starting_address as usize;
+    println!(
+        "DeviceMemory start = 0x{:08x}, size = 0x{:08x}",
+        reg_addr, reg_size
+    );
+
+    // Translate the device address into the CPU address space with the ranges
+    // of the bus the controller sits on: the EMMC2 is on /emmc2bus
+    // (0x7e340000 -> 0xfe340000), the Pi 3 controller is on /soc.
+    for bus in ["/emmc2bus", "/soc"] {
+        if let Some(mut ranges) = fdt.find_node(bus).and_then(|f| f.ranges()) {
+            if let Some(range) = ranges
+                .find(|f| f.child_bus_address <= reg_addr && reg_addr - f.child_bus_address < f.size)
+            {
+                reg_addr = range.parent_bus_address + (reg_addr - range.child_bus_address);
+                println!(
+                    "DeviceMemory remapped onto CPU address space: start = 0x{:08x}, size = 0x{:08x}",
+                    reg_addr, reg_size
+                );
+                break;
+            }
+        }
+    }
+
+    let addr = unsafe {
+        common::physmap(
+            reg_addr,
+            reg_size,
+            common::Prot::RW,
+            common::MemoryType::DeviceMemory,
+        )
+        .expect("bcm2835-sdhcid: failed to map address") as usize
+    };
+    println!(
+        "ioremap 0x{:08x} to 0x{:08x}",
+        reg.starting_address as usize, addr
+    );
+
+    if emmc2 {
+        // The firmware leaves the EMMC2 clock at 100 MHz by default.
+        let mut controller = sdhci::SdhciCtrl::new(addr, 100_000_000);
+        unsafe {
+            controller
+                .init()
+                .expect("emmc2: failed to initialize the SD card");
+        }
+        run_scheme(daemon, controller);
+    } else {
+        let mut controller = sd::SdHostCtrl::new(addr);
+        unsafe {
+            controller.init();
+        }
+        run_scheme(daemon, controller);
+    }
 }

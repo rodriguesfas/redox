@@ -1,0 +1,20 @@
+# AIOS Edge — imagem para o Raspberry Pi 4B (BCM2711)
+#
+# Board: raspi4bp — o cartão SD está no controlador EMMC2 (SDHCI padrão),
+# atendido pelo driver bcm2835-sdhcid (modo SDHCI, ver src/sdhci.rs).
+#
+# Build da imagem:  make ARCH=aarch64 BOARD=raspi4bp CONFIG_NAME=pi4 all
+# Saída:            build/aarch64/pi4/harddrive.img
+# Gravação no cartão: dd if=build/aarch64/pi4/harddrive.img of=/dev/sdX bs=4M conv=fsync
+#
+# Difere da config `aios` (QEMU virt / genérica) apenas no tamanho da imagem
+# (precisa caber no cartão SD) — pacotes e arquivos são herdados dela.
+
+include = ["../aios.toml"]
+
+# General settings
+[general]
+# Tamanho total da imagem em MiB (sistema + modelo TinyLlama ~638 MiB)
+filesystem_size = 2048
+# EFI partition size in MiB (bootloader Redox + u-boot do Pi 4)
+efi_partition_size = 128

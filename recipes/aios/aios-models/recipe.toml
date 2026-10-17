@@ -1,0 +1,32 @@
+# Bundle de modelos padrão do AIOS Edge OS.
+#
+# Vive neste repo (overlay), não no upstream. A fonte é o diretório
+# `aios-models-data/` na raiz do checkout (copiado pelo fetch do cookbook, com
+# cache por mtime); ele contém o modelo default (TinyLlama 1.1B Chat Q4_K_M) e
+# o tokenizer companheiro usado pelo backend candle.
+#
+# Para regenerar `aios-models-data/` num checkout novo:
+#   mkdir -p aios-models-data
+#   cp -l tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf aios-models-data/   # hardlink
+#   cp tokenizer.json aios-models-data/
+#
+# Destino no sistema: /usr/share/aios/models/ (AIOS_MODELS_DIR da imagem).
+[package]
+name = "aios-models"
+version = "0.1.0"
+description = "AIOS default model bundle: TinyLlama 1.1B Chat Q4_K_M + tokenizer"
+license = "Apache-2.0"
+dependencies = []
+
+[source]
+path = "aios-models-data"
+
+[build]
+template = "custom"
+script = """
+set -e
+# O script roda com CWD no diretório de build; a fonte está em COOKBOOK_SOURCE.
+mkdir -pv "${COOKBOOK_STAGE}/usr/share/aios/models"
+cp -v "${COOKBOOK_SOURCE}/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf" "${COOKBOOK_STAGE}/usr/share/aios/models/"
+cp -v "${COOKBOOK_SOURCE}/tokenizer.json" "${COOKBOOK_STAGE}/usr/share/aios/models/"
+"""

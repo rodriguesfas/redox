@@ -1,0 +1,75 @@
+# AIOS Edge — imagem do SO (aarch64)
+#
+# Produto: AIOS Edge OS — sistema Edge AI enxuto, sem GUI nativa (interface
+# gráfica é web), com o runtime AIOS embutido (ai, edge, edge-ai, aios-dev,
+# aios-deploy, aios-security) e o daemon `edge-ai` subindo no boot.
+#
+# Build:   make ARCH=aarch64 CONFIG_NAME=aios all
+# Board Pi 4: configuração própria em config/aarch64/raspi4bp/ (EMMC2/GENET).
+
+include = ["../minimal.toml"]
+
+# General settings
+[general]
+# Filesystem size in MiB (base + binários + modelo TinyLlama ~638 MiB)
+filesystem_size = 4096
+# EFI partition size in MiB (bootloader UEFI)
+efi_partition_size = 512
+
+# Package settings
+[packages]
+# Produto AIOS: compila aios-src para o alvo (aarch64-unknown-redox)
+aios = {}
+# Modelo default (TinyLlama Q4_K_M + tokenizer) em /usr/share/aios/models
+aios-models = {}
+# Console serial: shell de conforto + curl para testar a API local
+bash = {}
+curl = {}
+# Ferramentas de diagnóstico (ps, top, ...)
+uutils = {}
+
+# Daemon AIOS no boot: serviço init (oneshot_async = não bloqueia o boot).
+# Depende da rede (10_net.target) apenas de forma fraca.
+[[files]]
+path = "/usr/lib/init.d/50_aios_edge.service"
+data = """
+[unit]
+description = "AIOS Edge daemon (edge-ai): API HTTP + painel web"
+requires_weak = [
+    "10_net.target",
+]
+
+[service]
+cmd = "edge-ai"
+args = ["--host", "0.0.0.0", "--port", "8989", "--model", "tinyllama"]
+envs = { AIOS_MODELS_DIR = "/usr/share/aios/models", AIOS_REGISTRY = "/var/lib/ai/registry.tsv" }
+type = "oneshot_async"
+"""
+
+# Registry inicial de modelos (TSV: nome, caminho, sha256, tamanho).
+# O arquivo em /var/lib/ai/ é gravável: `ai model add` atualiza por lá.
+[[files]]
+path = "/var/lib/ai/registry.tsv"
+data = "tinyllama\t/usr/share/aios/models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf\t9fecc3b3cd76bba89d504f29b616eedf7da85b96540e490ca5824d3f7d2776a0\t668788096\n"
+
+# Roteamento de tarefas do CLI `ai` (default /etc/ai/tasks.json).
+[[files]]
+path = "/etc/ai/tasks.json"
+data = """
+{
+  "routes": {
+    "autocomplete": { "model": "tinyllama", "max_tokens": 64 },
+    "classify":     { "model": "tinyllama", "max_tokens": 16 },
+    "code":         { "model": "tinyllama", "max_tokens": 128 },
+    "correct":      { "model": "tinyllama", "max_tokens": 64 },
+    "explain":      { "model": "tinyllama", "max_tokens": 96 },
+    "extract":      { "model": "tinyllama", "max_tokens": 64 },
+    "intent":       { "model": "tinyllama", "max_tokens": 24 },
+    "qa":           { "model": "tinyllama", "max_tokens": 80 },
+    "review":       { "model": "tinyllama", "max_tokens": 128 },
+    "rewrite":      { "model": "tinyllama", "max_tokens": 96 },
+    "summarize":    { "model": "tinyllama", "max_tokens": 64 },
+    "translate":    { "model": "tinyllama", "max_tokens": 96 }
+  }
+}
+"""
