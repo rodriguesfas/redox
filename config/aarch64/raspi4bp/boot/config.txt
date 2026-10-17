@@ -1,0 +1,24 @@
+# AIOS Edge OS — Raspberry Pi 4 Model B (BCM2711)
+#
+# Cadeia de boot deste cartão:
+#   EEPROM do Pi 4 -> start4.elf (firmware VideoCore, lê este config.txt)
+#   -> kernel8.img (u-boot, na raiz desta partição)
+#   -> EFI/BOOT/BOOTAA64.EFI (bootloader Redox, na partição EFI)
+#   -> kernel Redox (partição RedoxFS).
+#
+# Console serial: UART0 (PL011) nos pinos GPIO 14 (TX) / 15 (RX), 115200 8N1.
+# Este arquivo fica na raiz da partição EFI (FAT) do cartão SD.
+
+arm_64bit=1
+
+# Console serial e debug do firmware no UART0
+enable_uart=1
+uart_2ndstage=1
+# No Pi 4 a PL011 é usada pelo Bluetooth; este overlay a libera nos pinos do GPIO
+dtoverlay=disable-bt
+
+# u-boot como "kernel" do firmware + DT oficial do 4B
+kernel=kernel8.img
+device_tree=bcm2711-rpi-4-b.dtb
+
+disable_overscan=1
