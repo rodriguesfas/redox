@@ -1,0 +1,11 @@
+[unit]
+description = "BCM2711 GENET Ethernet driver (Raspberry Pi 4)"
+requires_weak = [
+    "00_base.target",
+]
+condition_architecture = ["aarch64"]
+condition_board = ["raspi4bp"]
+
+[service]
+cmd = "bcm2711-genetd"
+type = "notify"

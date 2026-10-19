@@ -1,0 +1,20 @@
+[package]
+name = "bcm2711-genetd"
+description = "BCM2711 GENET Ethernet driver (Raspberry Pi 4)"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+fdt = { git = "https://github.com/repnop/fdt.git", rev = "059bb23" }
+common = { path = "../../common" }
+daemon = { path = "../../../daemon" }
+driver-network = { path = "../driver-network" }
+
+libredox.workspace = true
+redox_syscall = { workspace = true, features = ["std"] }
+redox_event.workspace = true
+
+[lints]
+workspace = true
