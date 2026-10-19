@@ -299,6 +299,46 @@ existia e nao persiste).
 - [PENDING] validar no boot real (Acer): `localectl set-keymap br-abnt2` sobrevive ao reboot
   (arquivo + unit) e o console sobe em ABNT2.
 
+## 2026-10-19b — #34 `dhcpd`: renovacao de lease (T1/T2, rebind e DISCOVER de novo)
+
+Fecha o gap que ficou do 2026-10-16e: o `dhcpd` fazia o DISCOVER/OFFER/REQUEST/ACK, escrevia o
+endereco na `netcfg` e **morria**. A concessao vencia no meio do dia e a rede caia sem ninguem
+para renova-la. Agora o daemon fica vivo e cuida dela.
+
+- [DONE] `src/lease.rs`: `Timers::from_options` (opcoes 51/58/59 em segundos; sem a 51 nao ha
+  concessao para manter — quem nao sabe ate quando pode usar o endereco nao tem o que renovar;
+  T1/T2 que nao caibam na concessao caem no padrao do RFC, metade e sete oitavos),
+  `Timers::at` (Waiting/Renew/Rebind/Expired), `Timers::wait` (quanto dormir ate o proximo
+  estagio) e `Timers::renewed` (ACK sem os tempos = a concessao continua a mesma).
+- [DONE] `src/dhcp/options.rs`: parser das opcoes que o cliente aproveita (1 mascara, 3 roteador,
+  6 DNS, 51/58/59 tempos, 53 tipo, 54 servidor) — primeira resposta vale, tamanho errado e
+  ignorado, corte no fim encerra a leitura sem panico. O `dhcp()` deixou de andar pelo buffer a
+  mao e usa o parser no OFFER e no ACK.
+- [DONE] `dhcp()` devolve a concessao (endereco, opcao 54 e tempos): NAK explicito agora e
+  recusado (antes passava como se nada) e `None` quando o servidor nao diz ate quando — nesse
+  caso o comportamento antigo (faz a troca e sai) e o certo.
+- [DONE] `renew()`: pedido em RENEWING com o endereco em `ciaddr` e **sem** as opcoes 50/54
+  (RFC 2131 4.3.2), unicast para quem concedeu (opcao 54) e broadcast quando nao se sabe quem
+  foi; em REBINDING o mesmo pedido vira broadcast (flag `0x8000`).
+- [DONE] `watch()`: renova em T1, re-vincula em T2 e, se a concessao vencer, refaz o DISCOVER;
+  backoff de 30s a 5min nas tentativas e reset ao renovar.
+- [DONE] `--once` mantem o comportamento antigo (uma troca e sai), util para debugar;
+  `usage: dhcpd [INTERFACE] [-v] [--once]`.
+- [NOTA] um ACK de renovacao que conceda *outro* endereco nao e aplicado meio-a-meio (quem
+  configura o endereco e o caminho do DISCOVER): a renovacao falha e a concessao segue o curso
+  ate o rebind/vencimento, que e quando o DISCOVER roda.
+- [NOTA] com a concessao vencida nao ha como limpar o endereco pela `netcfg` (`addr/set` so
+  escreve): fica loggado, e o proximo DISCOVER sobrescreve.
+- Testes: `dhcpd` com **21** (eram 4) — 9 de `lease` (padroes, tempos que nao cabem, estagios,
+  espera, renovacao), 6 do parser, o pacote de renovacao (ciaddr preenchido, sem 50/54, chaddr
+  com o MAC, broadcast no rebind) e os de argumento (`--once`). Suite completa do CI (20
+  pacotes) em **659 passed / 0 failed**.
+- Redox: `cook base` **successful** -> `usr/bin/dhcpd` rebuildado (403384 B) e
+  `usr/lib/init.d/10_dhcpd.service` no stage (a unit segue `oneshot_async`: o init sobe o daemon
+  e nao espera — o daemon agora nao sai).
+- [PENDING] validar no boot real (Acer): `DHCP: Lease renewed` em T1, derrubar o servidor DHCP
+  para ver o rebind em T2, e o endereco continuando configurado depois de T1 (`networkctl`).
+
 ## 2026-10-16d — #34 `networkd` slice 2/2: daemon dono de `/scheme/networkd`
 
 Fecha o `networkd` — e com ele o eixo de init/userspace do #34 (journald ✅, logind ✅, resolved ✅,
