@@ -29,27 +29,40 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libsdl2-dev
 
-      # O workspace recipes/core/base/source ee parcial no fork: adicionamos apenas
-      # drivers/Cargo.toml/Makefile/net. Os outros membros (audiod etc.) moram em base.git —
-      # cloneiamos duro e o nosso por cima (sem --delete preserva nossas pastas).
+      # O workspace recipes/core/base/source ee parcial no fork: adicionamos apenas drivers/Cargo.toml/
+      # Makefile/net. Os outros membros moram em base.git -- cloneiamos duro e o nosso por cima (sem
+      # --delete preserva nossas pastas); os arquivos AIOS que o base.git nao tem ficam rastreados aqui
+      # (crate bcmgenetd, examples/rowtest.rs, unit do genetd).
       - name: Popula source/ com base.git (rsync overlay garante nossos arquivos)
         run: |
           set -e
-          # 19/10/2026: o ls-refs do protocol v2 do gitlab.redox-os.org responde 500 em alguns
-          # momentos; o protocol v1 nao passa por esse caminho (+ retries).
+          # 19/10/2026: o gitlab.redox-os.org esta devolvendo 500 no Gitaly (clone e archive); em
+          # outros dias o ls-refs do protocol v2 tambem falha. Tenta git (protocol v1), depois o
+          # archive, e desiste depois de 3 rodadas.
+          rm -rf /tmp/base-src /tmp/base-src.tar.gz
+          ok=
           for attempt in 1 2 3; do
             if git -c protocol.version=1 clone --depth 1 https://gitlab.redox-os.org/redox-os/base.git /tmp/base-src; then
+              ok=1
               break
             fi
-            echo "clone falhou (tentativa $attempt); retry em 10s"
+            echo "clone falhou (tentativa $attempt)"
             rm -rf /tmp/base-src
-            sleep 10
+            if curl -fsSL -o /tmp/base-src.tar.gz https://gitlab.redox-os.org/redox-os/base/-/archive/main/base-main.tar.gz; then
+              mkdir -p /tmp/base-src
+              tar -xzf /tmp/base-src.tar.gz -C /tmp/base-src --strip-components=1
+              ok=1
+              break
+            fi
+            echo "archive falhou (tentativa $attempt); retry em 15s"
+            rm -rf /tmp/base-src /tmp/base-src.tar.gz
+            sleep 15
           done
-          test -d /tmp/base-src/.git
-          REV=$(grep -m1 '^rev' recipes/core/base/recipe.toml | sed 's/.*"\(.*\)".*/\1/')
+          test -n "$ok"
           # --ignore-existing: preenche so o que falta; NAO sobrescreve nossos drivers
           rsync -a --ignore-existing /tmp/base-src/ recipes/core/base/source/
           ls recipes/core/base/source/audiod/Cargo.toml
+          test -d recipes/core/base/source/drivers/net/bcmgenetd
           grep -c ath9k_net recipes/core/base/source/Cargo.toml
 
       - name: Suite de testes (drivers WiFi/BT/i2c/storage/audio + journald/logind/networkd/resolved/dhcpd/inputd)
