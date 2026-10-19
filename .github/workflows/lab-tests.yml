@@ -35,7 +35,17 @@ jobs:
       - name: Popula source/ com base.git (rsync overlay garante nossos arquivos)
         run: |
           set -e
-          git clone --depth 1 https://gitlab.redox-os.org/redox-os/base.git /tmp/base-src
+          # 19/10/2026: o ls-refs do protocol v2 do gitlab.redox-os.org responde 500 em alguns
+          # momentos; o protocol v1 nao passa por esse caminho (+ retries).
+          for attempt in 1 2 3; do
+            if git -c protocol.version=1 clone --depth 1 https://gitlab.redox-os.org/redox-os/base.git /tmp/base-src; then
+              break
+            fi
+            echo "clone falhou (tentativa $attempt); retry em 10s"
+            rm -rf /tmp/base-src
+            sleep 10
+          done
+          test -d /tmp/base-src/.git
           REV=$(grep -m1 '^rev' recipes/core/base/recipe.toml | sed 's/.*"\(.*\)".*/\1/')
           # --ignore-existing: preenche so o que falta; NAO sobrescreve nossos drivers
           rsync -a --ignore-existing /tmp/base-src/ recipes/core/base/source/
