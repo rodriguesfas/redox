@@ -237,8 +237,8 @@ do HID (`International1` = `/ ?` do Brasil, hut1_21 nota 16).
   pré-existentes.
 - Redox: `cookbook_redoxer build -p inputd -p ps2d -p usbhidd` ok; `cook base` **successful** ->
   stage com `usr/bin/inputd` (contendo `br-abnt2`) e `usr/lib/drivers/usbhidd` atualizado.
-  `ps2d` é `INITFS_BINS` (compila no `make base`; o `initfs.img` é o alvo `initfs`, fora do
-  `cook base`).
+  `ps2d` é `INITFS_BINS` e entrou no `initfs.img`: o `install-base` monta o initfs com
+  `redox-initfs-ar` e instala em `usr/lib/boot/initfs` (corrigido em 2026-10-19).
 - CI `lab-tests`: PKGS ganhou `inputd` + passo `libsdl2-dev` (o orbclient linka SDL2 no host);
   run `38950775194` **verde**.
 - Commits: `28cdb79ec` (inputd) e `ba0861c8e` (drivers), push em `fork` + `backup`.
@@ -248,6 +248,56 @@ do HID (`International1` = `/ ?` do Brasil, hut1_21 nota 16).
 - [PENDING] critério `localectl set-keymap br-abnt2` da issue: não existe `localectl` na
   árvore (o runtime é `inputd -K br-abnt2`, mesmo `ControlHandle::activate_keymap`); um
   `localectl` + layout persistente no boot é candidato de próximo slice.
+
+## 2026-10-19 — #11 `localectl`: o keymap do console com arquivo e aplicacao no boot
+
+Fecha o que faltava do criterio da #11 (`localectl set-keymap br-abnt2`): o layout ganhou
+arquivo (`/etc/vconsole.conf`) e aplicacao no boot, alem do `inputd -K` (troca de runtime, que ja
+existia e nao persiste).
+
+- [DONE] `inputd` virou lib de verdade: `keymap` mudou para o `lib.rs` (para o `localectl` usar)
+  e entrou `vconsole` — `KEYMAP=<nome>` tolerante (comentarios, linhas em branco, chaves de
+  outros programas, aspas, `KEYMAP = x`), com `load`/`save` que recebem o path (testavel) e
+  default `us` quando o arquivo nao diz nada.
+- [DONE] `localectl`, segundo bin do pacote `inputd`: `status` (e o padrao, sem argumento),
+  `set-keymap <nome>` (escreve o arquivo **e** aplica no `inputd` agora pelo controle),
+  `apply` (so aplica; e o que o boot roda), `list-keymaps`, `--help`; nome ou comando invalido
+  = exit 1.
+- [DONE] `init.d/10_inputd_keymap.service` (`cmd = "localectl"`, `args = ["apply"]`, `oneshot`):
+  o `inputd` sobe do **initfs** (antes de `/etc` existir), entao quem le o arquivo e a onda de
+  units do root fs — o `switch_root` e quem passa a ler `/usr/lib/init.d` — e sem arquivo a unit
+  nao faz nada (default `us`).
+- [DONE] Makefile: `localectl` em `BASE_EXTRA_BINS` (o pacote `inputd` ja e buildado).
+- Testes: `vconsole` com 4 testes de host (ida-e-volta, tolerancia, arquivo que nao diz nada,
+  round trip em path de verdade) — `inputd` agora com **10**; suite completa do CI (20 pacotes)
+  em **642 passed / 0 failed**. Smoke no host: `--help`, `list-keymaps`, `status` (o
+  `/etc/vconsole.conf` do host de teste tem `XKBLAYOUT` e nenhum `KEYMAP` -> `us (default)`),
+  nome invalido e comando invalido = exit 1, `apply` sem arquivo = no-op.
+- Redox: `cookbook_redoxer build -p inputd` ok -> `inputd` (764072 B) e `localectl` (451080 B);
+  `cook base` **successful** -> stage com `usr/bin/localectl` (313264 B), a unit em
+  `/usr/lib/init.d/` e `usr/lib/boot/initfs` (22299212 B) com o `ps2d` novo.
+- [CORRECAO] o 2026-10-16f dizia que o `initfs.img` ficava fora do `cook base`: o `install-base`
+  monta o initfs (`redox-initfs-ar`) e instala em `usr/lib/boot/initfs`, entao o `ps2d` da #11
+  foi empacotado.
+- [INCIDENTE] no meio do slice o gitlab.redox-os.org ficou com o Gitaly devolvendo 500 (clone e
+  archive; o ls-refs do protocol v2 tambem falha): o `cook base` passou a precisar de
+  `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.version GIT_CONFIG_VALUE_0=1` e o CI quebrou no
+  clone do base.git. Dois fixes: o workflow agora tenta o git com protocol v1, cai para o archive
+  do `main` e repete ate 3 vezes; e o fork passou a rastrear os arquivos AIOS-only do base.git
+  que faltavam (`drivers/net/bcmgenetd`, `examples/rowtest.rs`,
+  `init.d/10_bcm2711-genetd.service`) — sem isso o CI quebraria na resolucao do workspace assim
+  que o gitlab voltasse. Simulacao local do passo (fork@HEAD + base `main` + os 20 pacotes):
+  **642 passed / 0 failed** e `metadata ok`.
+- [NOTA] o bin do daemon (`inputd`) nao linka no host (simbolos `redox_*` do `libredox` via
+  `common`/`redox_scheme`) — pre-existente; o CI roda `cargo test` (linka) e o `localectl`
+  linka no host porque so usa `std::fs`.
+- Commits: `3916822ce` (inputd/localectl), `d9782e219` (arquivos AIOS rastreados) e `780403a62`
+  (CI); o `b5a54a07a` foi a primeira tentativa de fix do CI. Push em `fork` + `backup`.
+- CI `lab-tests`: os runs `39270633353` e `39271839771` ficaram vermelhos **no clone do base.git**
+  (incidente do gitlab, nao do codigo); com o workflow corrigido, o re-run fica pendente do
+  gitlab voltar.
+- [PENDING] validar no boot real (Acer): `localectl set-keymap br-abnt2` sobrevive ao reboot
+  (arquivo + unit) e o console sobe em ABNT2.
 
 ## 2026-10-16d — #34 `networkd` slice 2/2: daemon dono de `/scheme/networkd`
 
