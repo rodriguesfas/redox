@@ -16,6 +16,7 @@ use std::fs::File;
 use std::ops::ControlFlow;
 use std::os::fd::IntoRawFd;
 
+use inputd::keymap::{KeymapData, KeymapKind, Typed};
 use inputd::{ControlEvent, VtEvent, VtEventKind};
 use libredox::errno::ESTALE;
 use libredox::Fd;
@@ -28,12 +29,6 @@ use syscall::{
     CallFlags, Error as SysError, EventFlags, FobtainFdFlags, EACCES, EBADF, EEXIST, EINVAL,
     EOPNOTSUPP,
 };
-
-pub mod keymap;
-
-use keymap::{KeymapKind, Typed};
-
-use crate::keymap::KeymapData;
 
 enum Handle {
     Producer,
@@ -693,7 +688,7 @@ fn daemon_runner(redox_daemon: daemon::SchemeDaemon) -> ! {
 const HELP: &str = r#"
 inputd [-K keymap|-A vt|--keymaps]
    -A vt       : set current virtual display
-   -K keymap   : set keyboard mapping
+   -K keymap   : set keyboard mapping (see: localectl list-keymaps)
    --keymaps   : list available keyboard mappings
 "#;
 

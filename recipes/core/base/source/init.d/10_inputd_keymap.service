@@ -1,0 +1,10 @@
+[unit]
+description = "Keyboard mapping of the console (/etc/vconsole.conf)"
+# inputd runs from the initfs, before /etc exists: this service is the one that
+# reads the file, now that the root filesystem is mounted.
+requires_weak = ["10_inputd.service"]
+
+[service]
+cmd = "localectl"
+args = ["apply"]
+type = "oneshot"

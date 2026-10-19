@@ -39,8 +39,9 @@ endif
 # live in the same package as the libraries.
 # journalctl lives in the journald package together with the logging daemon,
 # loginctl and logind in the logind package, networkctl and networkd in the
-# networkd package, and resolvectl and resolved in the resolved package.
-BASE_EXTRA_BINS = journalctl loginctl logind networkctl networkd resolvectl resolved
+# networkd package, resolvectl and resolved in the resolved package, and
+# localectl in the inputd package (which is already built: it is a base bin).
+BASE_EXTRA_BINS = journalctl loginctl logind networkctl networkd resolvectl resolved localectl
 BASE_EXTRA_CARGO_ARGS = -p journald -p logind -p networkd -p resolved
 
 INITFS_CARGO_ARGS = $(foreach bin,$(INITFS_BINS),-p $(bin))
