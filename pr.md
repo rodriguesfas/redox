@@ -336,6 +336,11 @@ para renova-la. Agora o daemon fica vivo e cuida dela.
 - Redox: `cook base` **successful** -> `usr/bin/dhcpd` rebuildado (403384 B) e
   `usr/lib/init.d/10_dhcpd.service` no stage (a unit segue `oneshot_async`: o init sobe o daemon
   e nao espera — o daemon agora nao sai).
+- [DONE] CI `lab-tests`: run [39429396901](https://github.com/rodriguesfas/redox/actions/runs/39429396901)
+  **verde** (success). No caminho, o `nvmed` falhava no CI com `no method set_poll_mode` porque
+  o `drivers/executor` (que tem `set_poll_mode`, do branch `aios`) nao era rastreado pelo fork e o
+  overlay do base `main` trazia o executor enxuto — fix: commit `6b6f1af07` rastreia
+  `drivers/executor` (3 arquivos, 1014 insercoes). Simulacao do passo do CI: 20/20 OK.
 - [PENDING] validar no boot real (Acer): `DHCP: Lease renewed` em T1, derrubar o servidor DHCP
   para ver o rebind em T2, e o endereco continuando configurado depois de T1 (`networkctl`).
 
