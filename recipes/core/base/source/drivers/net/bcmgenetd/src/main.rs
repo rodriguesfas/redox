@@ -12,7 +12,6 @@ use daemon::Daemon;
 use driver_network::NetworkScheme;
 use fdt::Fdt;
 use genet::Genet;
-use syscall;
 
 const CPRMAN_PHYS: usize = 0xfe1_01000;
 const GPIO_PHYS: usize = 0xfe20_0000;
@@ -63,6 +62,55 @@ fn mark(led: &Option<led::Led>, n: u32, path: &str, msg: &str) {
 /// NetworkAdapter implementation for BCM2711 GENET.
 struct GenetAdapter {
     genet: Genet,
+    /// Control channel response buffer
+    ctl_response: String,
+}
+
+impl GenetAdapter {
+    fn handle_ctl_command(&mut self, cmd: &[u8]) {
+        let cmd_str = match std::str::from_utf8(cmd) {
+            Ok(s) => s.trim(),
+            Err(_) => {
+                self.ctl_response = "ERR: invalid UTF-8\n".to_string();
+                return;
+            }
+        };
+
+        let parts: Vec<&str> = cmd_str.split_whitespace().collect();
+        if parts.is_empty() {
+            self.ctl_response = "ERR: empty command\n".to_string();
+            return;
+        }
+
+        match parts[0] {
+            "status" => {
+                let mac = self.genet.mac();
+                self.ctl_response = format!(
+                    "OK mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} driver=bcm2711-genetd\n",
+                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                );
+            }
+            "reboot" => {
+                self.ctl_response = "OK: reboot requested\n".to_string();
+                // TODO: implement reboot via proper syscall
+                // For now, just acknowledge
+            }
+            "update" => {
+                if parts.len() < 3 {
+                    self.ctl_response = "ERR: usage: update <url> <sha256>\n".to_string();
+                    return;
+                }
+                let url = parts[1];
+                let expected_hash = parts[2];
+                self.ctl_response = format!("OK: starting update from {} (expected hash: {})\n", url, expected_hash);
+                // TODO: implement actual download and apply
+                // For now, just acknowledge
+            }
+            _ => {
+                self.ctl_response = format!("ERR: unknown command '{}'\n", parts[0]);
+            }
+        }
+    }
 }
 
 impl driver_network::NetworkAdapter for GenetAdapter {
@@ -84,12 +132,17 @@ impl driver_network::NetworkAdapter for GenetAdapter {
         Ok(buf.len())
     }
 
-    fn ctl_write(&mut self, _cmd: &[u8]) -> Result<usize, syscall::Error> {
-        Err(syscall::Error::new(syscall::ENOSYS))
+    fn ctl_write(&mut self, cmd: &[u8]) -> Result<usize, syscall::Error> {
+        self.handle_ctl_command(cmd);
+        Ok(cmd.len())
     }
 
-    fn ctl_read(&mut self, _buf: &mut [u8]) -> Result<usize, syscall::Error> {
-        Err(syscall::Error::new(syscall::ENOSYS))
+    fn ctl_read(&mut self, buf: &mut [u8]) -> Result<usize, syscall::Error> {
+        let response = self.ctl_response.as_bytes();
+        let len = response.len().min(buf.len());
+        buf[..len].copy_from_slice(&response[..len]);
+        self.ctl_response.drain(..len);
+        Ok(len)
     }
 }
 
@@ -344,7 +397,7 @@ fn daemon(daemon: Daemon) -> ! {
     mark(&led, 6, "/var/lib/ai/net-06", "sobreviveu ao GENET — registrando network.genet");
 
     // Register network scheme (M2)
-    let adapter = GenetAdapter { genet };
+    let adapter = GenetAdapter { genet, ctl_response: String::new() };
     let mut scheme = NetworkScheme::new(
         move || adapter,
         daemon,
