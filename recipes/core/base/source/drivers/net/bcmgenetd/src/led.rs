@@ -68,3 +68,11 @@ impl Led {
         thread::sleep(Duration::from_millis(400));
     }
 }
+/// Busy-wait for approximately `ms` milliseconds (no sleep syscall).
+pub fn busy_wait(ms: u64) {
+    // Rough calibration: ~1M iterations per ms on Pi 4
+    let iters = ms * 1_000_000;
+    for _ in 0..iters {
+        core::hint::spin_loop();
+    }
+}

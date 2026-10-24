@@ -16,9 +16,9 @@ INITFS_BINS = ipcd init logd ramfs randd zerod \
 	acpid fbbootlogd hwd inputd lived \
 	pcid pcid-spawner rtcd vesad
 INITFS_DRIVERS_BINS = nvmed virtio-blkd  virtio-gpud
-BASE_BINS = fbcond getty inputd pcid pcid-spawner redoxerd audiod dhcpd ptyd netstack nbdd wpa_supplicant
+BASE_BINS = fbcond getty inputd pcid pcid-spawner redoxerd audiod dhcpd ptyd netstack nbdd wpa_supplicant bcm2711-genetd
 DRIVERS_BINS = e1000d ihdad ihdgd ixgbed rtl8139d rtl8168d \
-	usbctl usbhidd usbhubd usbscsid virtio-netd xhcid bcm2711-genetd \
+	usbctl usbhidd usbhubd usbscsid virtio-netd xhcid \
 	ath9k_net iwlwifi_net mt7921d_net rtw88_net btusd i2c-hidd
 
 ifneq (,$(filter i586-unknown-redox i686-unknown-redox x86_64-unknown-redox,$(TARGET)))
