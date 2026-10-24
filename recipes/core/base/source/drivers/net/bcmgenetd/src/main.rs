@@ -133,6 +133,21 @@ impl GenetAdapter {
                     self.ctl_response = "ERR: no update image downloaded\n".to_string();
                 }
             }
+            "shell" => {
+                if parts.len() < 2 {
+                    self.ctl_response = "ERR: usage: shell <command> [args...]\n".to_string();
+                    return;
+                }
+                let cmd = &parts[1..].join(" ");
+                match self.execute_shell(cmd) {
+                    Ok(output) => {
+                        self.ctl_response.push_str(&format!("OK:\n{}\n", output));
+                    }
+                    Err(e) => {
+                        self.ctl_response.push_str(&format!("ERR: {}\n", e));
+                    }
+                }
+            }
             _ => {
                 self.ctl_response = format!("ERR: unknown command '{}'\n", parts[0]);
             }
@@ -218,6 +233,27 @@ impl GenetAdapter {
             .map_err(|e| format!("sync failed: {}", e))?;
         
         Ok(())
+    }
+    
+    fn execute_shell(&self, cmd: &str) -> Result<String, String> {
+        use std::process::Command;
+        
+        // Execute command via ion shell
+        let output = Command::new("ion")
+            .arg("-c")
+            .arg(cmd)
+            .output()
+            .map_err(|e| format!("failed to execute shell: {}", e))?;
+        
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        
+        if output.status.success() {
+            Ok(stdout.to_string())
+        } else {
+            Err(format!("command failed (exit code: {}): {}", 
+                output.status.code().unwrap_or(-1), stderr))
+        }
     }
 }
 
