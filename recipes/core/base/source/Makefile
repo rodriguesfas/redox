@@ -18,7 +18,7 @@ INITFS_BINS = ipcd init logd ramfs randd zerod \
 INITFS_DRIVERS_BINS = nvmed virtio-blkd  virtio-gpud
 BASE_BINS = fbcond getty inputd pcid pcid-spawner redoxerd audiod dhcpd ptyd netstack nbdd wpa_supplicant
 DRIVERS_BINS = e1000d ihdad ihdgd ixgbed rtl8139d rtl8168d \
-	usbctl usbhidd usbhubd usbscsid virtio-netd xhcid bcm2711-genetd \
+	usbctl usbhidd usbhubd usbscsid virtio-netd xhcid bcm2711-genetd sdio brcmfmac \
 	ath9k_net iwlwifi_net mt7921d_net rtw88_net btusd i2c-hidd
 
 ifneq (,$(filter i586-unknown-redox i686-unknown-redox x86_64-unknown-redox,$(TARGET)))
@@ -41,7 +41,7 @@ endif
 # loginctl and logind in the logind package, networkctl and networkd in the
 # networkd package, resolvectl and resolved in the resolved package, and
 # localectl in the inputd package (which is already built: it is a base bin).
-BASE_EXTRA_BINS = journalctl loginctl logind networkctl networkd resolvectl resolved localectl
+BASE_EXTRA_BINS = journalctl loginctl logind networkctl networkd resolvectl resolved localectl initctl
 BASE_EXTRA_CARGO_ARGS = -p journald -p logind -p networkd -p resolved
 
 INITFS_CARGO_ARGS = $(foreach bin,$(INITFS_BINS),-p $(bin))

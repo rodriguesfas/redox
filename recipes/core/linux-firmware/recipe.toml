@@ -21,12 +21,8 @@ cp -r intel/ "${COOKBOOK_STAGE}/lib/firmware/" 2>/dev/null || true
 # MediaTek MT7921 WiFi/BT firmware
 cp -r mediatek/ "${COOKBOOK_STAGE}/lib/firmware/" 2>/dev/null || true
 
-# Intel WiFi firmware (iwlwifi)
-cp -r iwlwifi/ "${COOKBOOK_STAGE}/lib/firmware/" 2>/dev/null || true
-
-# Realtek WiFi firmware (rtw88/rtw89)
-cp -r rtw88/ "${COOKBOOK_STAGE}/lib/firmware/" 2>/dev/null || true
-cp -r rtw89/ "${COOKBOOK_STAGE}/lib/firmware/" 2>/dev/null || true
+# NVIDIA GSP firmware (RTX 40 series)
+cp -r nvidia/ "${COOKBOOK_STAGE}/lib/firmware/" 2>/dev/null || true
 
 # Realtek RTL8168 firmware
 mkdir -p "${COOKBOOK_STAGE}/lib/firmware/rtl_nic"
@@ -34,4 +30,11 @@ cp rtl_nic/rtl8168* "${COOKBOOK_STAGE}/lib/firmware/rtl_nic/" 2>/dev/null || tru
 
 # Intel Bluetooth firmware
 cp intel/ibt-* "${COOKBOOK_STAGE}/lib/firmware/intel/" 2>/dev/null || true
+
+# Broadcom firmware (Pi 4 BCM43455 WiFi/BT)
+mkdir -p "${COOKBOOK_STAGE}/lib/firmware/brcm"
+cp brcm/brcmfmac43455* "${COOKBOOK_STAGE}/lib/firmware/brcm/" 2>/dev/null || true
+cp brcm/brcmfmac43455-sdio* "${COOKBOOK_STAGE}/lib/firmware/brcm/" 2>/dev/null || true
+cp brcm/BCM4345* "${COOKBOOK_STAGE}/lib/firmware/brcm/" 2>/dev/null || true
+cp brcm/brcmfmac43430* "${COOKBOOK_STAGE}/lib/firmware/brcm/" 2>/dev/null || true
 """

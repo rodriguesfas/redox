@@ -67,6 +67,7 @@ members = [
     "drivers/net/mt7921d_net",
     "drivers/net/virtio-netd",
     "drivers/net/bcmgenetd",
+    "drivers/net/brcmfmac",
     "drivers/net/net80211",
 
     "drivers/redoxerd",
@@ -80,6 +81,8 @@ members = [
     "drivers/storage/nvmed",
     "drivers/storage/usbscsid",
     "drivers/storage/virtio-blkd",
+
+    "drivers/sdio",
 
     "drivers/usb/xhcid",
     "drivers/usb/usbctl",

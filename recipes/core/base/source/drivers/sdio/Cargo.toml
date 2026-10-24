@@ -1,0 +1,22 @@
+[package]
+name = "sdio"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "sdio"
+path = "src/main.rs"
+
+[lib]
+name = "sdio"
+path = "src/lib.rs"
+
+[dependencies]
+common = { path = "../common" }
+daemon = { path = "../../daemon" }
+fdt = { git = "https://github.com/repnop/fdt.git", rev = "059bb23" }
+redox_syscall = { workspace = true, features = ["std"] }
+redox_event = { workspace = true }
+
+[lints]
+workspace = true
