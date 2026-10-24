@@ -66,6 +66,8 @@ struct GenetAdapter {
     genet: Genet,
     /// Control channel response buffer
     ctl_response: String,
+    /// Downloaded update image (stored for apply)
+    update_image: Option<Vec<u8>>,
 }
 
 impl GenetAdapter {
@@ -108,12 +110,27 @@ impl GenetAdapter {
                 match GenetAdapter::download_and_verify(url, expected_hash) {
                     Ok(data) => {
                         self.ctl_response.push_str(&format!("OK: downloaded {} bytes, hash verified\n", data.len()));
-                        // TODO: apply update (write to partition)
-                        self.ctl_response.push_str("OK: update applied (stub)\n");
+                        // Store for apply command
+                        self.update_image = Some(data);
+                        self.ctl_response.push_str("OK: run 'apply' to write to partition\n");
                     }
                     Err(e) => {
                         self.ctl_response.push_str(&format!("ERR: {}\n", e));
                     }
+                }
+            }
+            "apply" => {
+                if let Some(image) = self.update_image.take() {
+                    match self.apply_update(&image) {
+                        Ok(()) => {
+                            self.ctl_response.push_str("OK: update written to partition\n");
+                        }
+                        Err(e) => {
+                            self.ctl_response.push_str(&format!("ERR: apply failed: {}\n", e));
+                        }
+                    }
+                } else {
+                    self.ctl_response = "ERR: no update image downloaded\n".to_string();
                 }
             }
             _ => {
@@ -178,6 +195,29 @@ impl GenetAdapter {
         }
         
         Ok(body_bytes.to_vec())
+    }
+    
+    fn apply_update(&self, image: &[u8]) -> Result<(), String> {
+        // Write the image to the root partition (partition 3 on Pi 4)
+        // In Redox, we access block devices via the disk scheme
+        // The root partition is typically /dev/disk.mmc.2 (3rd partition, 0-indexed)
+        let disk_path = "disk.mmc.2";
+        
+        // Open the disk scheme for writing
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(disk_path)
+            .map_err(|e| format!("failed to open {}: {}", disk_path, e))?;
+        
+        // Write the full image (this assumes the image is a full disk image with all partitions)
+        // For partition-only update, we'd need to seek to the partition offset
+        file.write_all(image)
+            .map_err(|e| format!("write failed: {}", e))?;
+        
+        file.sync_all()
+            .map_err(|e| format!("sync failed: {}", e))?;
+        
+        Ok(())
     }
 }
 
@@ -465,7 +505,7 @@ fn daemon(daemon: Daemon) -> ! {
     mark(&led, 6, "/var/lib/ai/net-06", "sobreviveu ao GENET — registrando network.genet");
 
     // Register network scheme (M2)
-    let adapter = GenetAdapter { genet, ctl_response: String::new() };
+    let adapter = GenetAdapter { genet, ctl_response: String::new(), update_image: None };
     let mut scheme = NetworkScheme::new(
         move || adapter,
         daemon,
