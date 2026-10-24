@@ -45,7 +45,8 @@ fn run_scheme<D: Disk + 'static>(daemon: daemon::Daemon, disk: D) -> ! {
         .subscribe(scheme.event_handle().raw(), 0, EventFlags::READ)
         .expect("mmcd: failed to event disk scheme");
 
-    libredox::call::setrens(0, 0).expect("mmcd: failed to enter null namespace");
+    // AIOS: NÃO entra no namespace null — mantém no initfs para que o init veja disk.mmc
+    // libredox::call::setrens(0, 0).expect("mmcd: failed to enter null namespace");
 
     for event in event_queue {
         let event = event.unwrap();
