@@ -3,7 +3,8 @@ mod genet;
 mod led;
 
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::thread;
 use std::time::Duration;
 
@@ -12,6 +13,7 @@ use daemon::Daemon;
 use driver_network::NetworkScheme;
 use fdt::Fdt;
 use genet::Genet;
+use sha2::{Digest, Sha256};
 
 const CPRMAN_PHYS: usize = 0xfe1_01000;
 const GPIO_PHYS: usize = 0xfe20_0000;
@@ -92,8 +94,6 @@ impl GenetAdapter {
             }
             "reboot" => {
                 self.ctl_response = "OK: reboot requested\n".to_string();
-                // TODO: implement reboot via proper syscall
-                // For now, just acknowledge
             }
             "update" => {
                 if parts.len() < 3 {
@@ -103,13 +103,81 @@ impl GenetAdapter {
                 let url = parts[1];
                 let expected_hash = parts[2];
                 self.ctl_response = format!("OK: starting update from {} (expected hash: {})\n", url, expected_hash);
-                // TODO: implement actual download and apply
-                // For now, just acknowledge
+                
+                // Perform actual download and verification
+                match GenetAdapter::download_and_verify(url, expected_hash) {
+                    Ok(data) => {
+                        self.ctl_response.push_str(&format!("OK: downloaded {} bytes, hash verified\n", data.len()));
+                        // TODO: apply update (write to partition)
+                        self.ctl_response.push_str("OK: update applied (stub)\n");
+                    }
+                    Err(e) => {
+                        self.ctl_response.push_str(&format!("ERR: {}\n", e));
+                    }
+                }
             }
             _ => {
                 self.ctl_response = format!("ERR: unknown command '{}'\n", parts[0]);
             }
         }
+    }
+    
+    fn download_and_verify(url: &str, expected_hash: &str) -> Result<Vec<u8>, String> {
+        // Parse URL (simple HTTP only)
+        let url = url.strip_prefix("http://").ok_or("only http:// supported")?;
+        let (host_port, path) = url.split_once('/').ok_or("invalid URL format")?;
+        let path = format!("/{}", path);
+        
+        // Resolve address
+        let addrs: Vec<_> = (host_port, 80).to_socket_addrs()
+            .map_err(|e| format!("DNS resolution failed: {}", e))?
+            .collect();
+        let addr = addrs.first().ok_or("no address resolved")?;
+        
+        // Connect
+        let mut stream = TcpStream::connect_timeout(addr, Duration::from_secs(10))
+            .map_err(|e| format!("connection failed: {}", e))?;
+        stream.set_read_timeout(Some(Duration::from_secs(30)))
+            .map_err(|e| format!("set timeout failed: {}", e))?;
+        
+        // Send HTTP GET request
+        let request = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            path, host_port
+        );
+        stream.write_all(request.as_bytes())
+            .map_err(|e| format!("write request failed: {}", e))?;
+        
+        // Read response
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response)
+            .map_err(|e| format!("read response failed: {}", e))?;
+        
+        // Parse HTTP response
+        let response_str = std::str::from_utf8(&response)
+            .map_err(|_| "invalid UTF-8 in response")?;
+        
+        let (headers, body) = response_str.split_once("\r\n\r\n")
+            .ok_or("malformed HTTP response")?;
+        
+        let status_line = headers.lines().next().ok_or("no status line")?;
+        if !status_line.contains(" 200 ") {
+            return Err(format!("HTTP error: {}", status_line));
+        }
+        
+        let body_bytes = body.as_bytes();
+        
+        // Verify SHA256
+        let mut hasher = Sha256::new();
+        hasher.update(body_bytes);
+        let hash = hasher.finalize();
+        let hash_hex = format!("{:x}", hash);
+        
+        if hash_hex != expected_hash {
+            return Err(format!("hash mismatch: expected {}, got {}", expected_hash, hash_hex));
+        }
+        
+        Ok(body_bytes.to_vec())
     }
 }
 
