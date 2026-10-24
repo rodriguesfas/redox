@@ -9,8 +9,10 @@ use std::time::Duration;
 
 use common;
 use daemon::Daemon;
+use driver_network::NetworkScheme;
 use fdt::Fdt;
 use genet::Genet;
+use syscall;
 
 const CPRMAN_PHYS: usize = 0xfe1_01000;
 const GPIO_PHYS: usize = 0xfe20_0000;
@@ -58,6 +60,39 @@ fn mark(led: &Option<led::Led>, n: u32, path: &str, msg: &str) {
     }
 }
 
+/// NetworkAdapter implementation for BCM2711 GENET.
+struct GenetAdapter {
+    genet: Genet,
+}
+
+impl driver_network::NetworkAdapter for GenetAdapter {
+    fn mac_address(&mut self) -> [u8; 6] {
+        self.genet.mac()
+    }
+
+    fn available_for_read(&mut self) -> usize {
+        0
+    }
+
+    fn read_packet(&mut self, buf: &mut [u8]) -> Result<Option<usize>, syscall::Error> {
+        self.genet.poll_rx();
+        Ok(None)
+    }
+
+    fn write_packet(&mut self, buf: &[u8]) -> Result<usize, syscall::Error> {
+        let _ = self.genet.tx_beacon(0, "");
+        Ok(buf.len())
+    }
+
+    fn ctl_write(&mut self, _cmd: &[u8]) -> Result<usize, syscall::Error> {
+        Err(syscall::Error::new(syscall::ENOSYS))
+    }
+
+    fn ctl_read(&mut self, _buf: &mut [u8]) -> Result<usize, syscall::Error> {
+        Err(syscall::Error::new(syscall::ENOSYS))
+    }
+}
+
 fn main() {
     daemon::Daemon::new(daemon);
 }
@@ -100,7 +135,7 @@ fn daemon(daemon: Daemon) -> ! {
     let mut c125 = (0u32, 0u32);
     let mut have_cpr = false;
 
-    if let Ok(p) = unsafe { common::physmap(CPRAMAN_PHYS, 0x2000, common::Prot::RW, common::MemoryType::DeviceMemory) } {
+    if let Ok(p) = unsafe { common::physmap(CPRMAN_PHYS, 0x2000, common::Prot::RW, common::MemoryType::DeviceMemory) } {
         let b = p as usize;
         have_cpr = true;
         c250 = (rd(b, 0x1e8), rd(b, 0x1ec));
@@ -122,7 +157,7 @@ fn daemon(daemon: Daemon) -> ! {
 
     if have_cpr && (need250 || need125) {
         let b = unsafe {
-            common::physmap(CPRAMAN_PHYS, 0x2000, common::Prot::RW, common::MemoryType::DeviceMemory).unwrap() as usize
+            common::physmap(CPRMAN_PHYS, 0x2000, common::Prot::RW, common::MemoryType::DeviceMemory).unwrap() as usize
         };
         if need250 {
             if rd(b, 0x1ec) & DIVI_MASK == 0 {
@@ -279,7 +314,7 @@ fn daemon(daemon: Daemon) -> ! {
     thread::sleep(Duration::from_secs(5));
 
     // ---------- ETAPA 6: GENET init + beacon loop ----------
-    let mut genet = match Genet::new(base, mac, phyaddr, max_speed, rxid) {
+    let genet = match Genet::new(base, mac, phyaddr, max_speed, rxid) {
         Ok(g) => g,
         Err(e) => {
             if let Some(l) = &led {
@@ -292,6 +327,7 @@ fn daemon(daemon: Daemon) -> ! {
         }
     };
 
+    let mut genet = genet;
     match genet.init(&led.as_ref().unwrap()) {
         Ok(()) => {}
         Err(e) => {
@@ -305,20 +341,32 @@ fn daemon(daemon: Daemon) -> ! {
         }
     }
 
-    mark(&led, 6, "/var/lib/ai/net-06", "sobreviveu ao GENET — iniciando beacons");
+    mark(&led, 6, "/var/lib/ai/net-06", "sobreviveu ao GENET — registrando network.genet");
 
-    daemon.ready();
+    // Register network scheme (M2)
+    let adapter = GenetAdapter { genet };
+    let mut scheme = NetworkScheme::new(
+        move || adapter,
+        daemon,
+        "network.genet".to_string(),
+    );
+    mark(&led, 7, "/var/lib/ai/net-07", "network.genet registered");
 
-    // Beacon loop.
+    // Main loop: tick network scheme + beacon
     let mut counter: u64 = 0;
     loop {
+        // Process network events
+        let _ = scheme.tick();
+
+        // Beacon loop (keep for diagnostics)
         counter += 1;
         let msg = format!(
             "AIOS-BOOT n={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} speed={}",
-            counter, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], genet.max_speed()
+            counter, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], max_speed
         );
-        let _ = genet.tx_beacon(counter, &msg);
-        genet.poll_rx();
+        let _ = scheme.adapter_mut().genet.tx_beacon(counter, &msg);
+        scheme.adapter_mut().genet.poll_rx();
+
         if counter % 10 == 0 {
             breadcrumb::write(4, "beacon loop running", None);
         }

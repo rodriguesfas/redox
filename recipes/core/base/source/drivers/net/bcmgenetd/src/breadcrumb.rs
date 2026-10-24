@@ -18,3 +18,14 @@ pub fn write(stage: u32, msg: &str, err: Option<&str>) {
         let _ = f.sync_all();
     }
 }
+
+pub fn write_at(path: &str, stage: u32, msg: &str) {
+    let content = format!("stage={}\nmsg={}\n", stage, msg);
+    if let Some(dir) = std::path::Path::new(path).parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let _ = fs::write(path, &content);
+    if let Ok(mut f) = fs::OpenOptions::new().write(true).open(path) {
+        let _ = f.sync_all();
+    }
+}
