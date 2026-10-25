@@ -1,5 +1,9 @@
 [source]
 git = "https://gitlab.redox-os.org/redox-os/bootloader.git"
+# AIOS: pino do bootloader com auto-boot headless (menu com timeout) + fix
+# da tecla zerada do ConsoleIn do OVMF. Sem esse rev o cookbook usa o pacote
+# em cache (EFI pristino, menu travado sem teclado).
+rev = "67262f3253ba6af82a0281df43fd210dfdcc23c6"
 
 [build]
 template = "custom"
