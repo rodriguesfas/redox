@@ -1,6 +1,6 @@
 [source]
 git = "https://gitlab.redox-os.org/redox-os/base.git"
-rev = "b5c76140b16b28630db09edaa2bf8e0ffbda9ec2"
+rev = "dfb4eb2b812605a8c4d4fa36fda862bcbb95af90"
 patches = []
 
 [build]
