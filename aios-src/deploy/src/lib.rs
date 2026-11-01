@@ -9,7 +9,10 @@ pub mod validate;
 
 pub use deploy_protocol::{DeployConfig, DeployPlan, DeployStatus, DeployStep};
 pub use device_registry::{DeviceEntry, DeviceRegistry, DeviceStatus};
-pub use transfer::{health_check, transfer_model, HealthReport, TransferConfig, TransferResult};
+pub use transfer::{
+    health_check, normalize_base_url, probe_device, rollback_model, scan_subnet, transfer_model,
+    DeviceProbe, HealthReport, RollbackResult, TransferConfig, TransferResult,
+};
 pub use validate::{validate_deployment, CompatibilityCheck};
 
 use std::path::PathBuf;

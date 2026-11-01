@@ -1,7 +1,7 @@
 [source]
 git = "https://gitlab.redox-os.org/redox-os/userutils.git"
 rev = "951d93c6c065d37050d5027a3439a56a717bebfe"
-patches = ["login-logind.patch"]
+patches = ["login-logind.patch", "aios-branding.patch"]
 
 [build]
 template = "custom"

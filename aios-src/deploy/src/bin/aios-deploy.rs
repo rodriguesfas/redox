@@ -1,24 +1,36 @@
 //! `aios-deploy`: Edge Deployment CLI (Fase 7).
 //!
-//!   aios-deploy devices              list registered devices
+//!   aios-deploy devices | list       list registered devices
 //!   aios-deploy add <name> <addr>    register a new edge device
 //!   aios-deploy remove <id>          remove a device
 //!   aios-deploy deploy <id> <model>  deploy a model to a device
-//!   aios-deploy status <id>          show deployment status
+//!   aios-deploy status <id>          show deployment status (live probe)
+//!   aios-deploy rollback <id> <model> restore the previous model version
 //!   aios-deploy validate <id> <model> validate compatibility
+//!   aios-deploy scan [prefix]        discover edge-ai nodes on a /24 LAN
+//!   aios-deploy provision <addr>     probe + register a node (RJ45 onboarding)
+//!   aios-deploy probe <addr>         live health without registering
 //!   aios-deploy help
 
-use aios_deploy::{validate_deployment, DeviceEntry, DeviceRegistry, DeviceStatus, TransferConfig};
+use aios_deploy::{
+    normalize_base_url, probe_device, scan_subnet, validate_deployment, DeviceEntry, DeviceRegistry,
+    DeviceStatus, TransferConfig,
+};
 use std::path::PathBuf;
 use std::process::exit;
 
 const USAGE: &str = "\
 usage:
-  aios-deploy devices
+  aios-deploy devices | list
   aios-deploy add <name> <address> [--arch ARCH] [--os OS] [--ram MB] [--storage MB]
   aios-deploy remove <id>
   aios-deploy deploy <device-id> <model-path> [--name NAME] [--force] [--no-verify]
+  aios-deploy status <device-id>
+  aios-deploy rollback <device-id> <model-name>
   aios-deploy validate <device-id> <model-path>
+  aios-deploy scan [prefix]          # default prefix 10.42.0 (PC↔Pi cabo)
+  aios-deploy provision <address> [--name NAME]
+  aios-deploy probe <address>
   aios-deploy help";
 
 fn main() {
@@ -28,11 +40,16 @@ fn main() {
             eprintln!("{USAGE}");
             2
         }
-        Some("devices") => cmd_devices(&args[1..]),
+        Some("devices" | "list") => cmd_devices(&args[1..]),
         Some("add") => cmd_add(&args[1..]),
         Some("remove") => cmd_remove(&args[1..]),
         Some("deploy") => cmd_deploy(&args[1..]),
+        Some("status") => cmd_status(&args[1..]),
+        Some("rollback") => cmd_rollback(&args[1..]),
         Some("validate") => cmd_validate(&args[1..]),
+        Some("scan") => cmd_scan(&args[1..]),
+        Some("provision") => cmd_provision(&args[1..]),
+        Some("probe") => cmd_probe(&args[1..]),
         Some("help" | "-h" | "--help") => {
             println!("{USAGE}");
             0
@@ -465,6 +482,359 @@ fn cmd_deploy(args: &[String]) -> i32 {
                  back healthy. It may need a service restart, or the model may be \
                  too large to load on this device."
             );
+
+            // The daemon keeps the replaced model under `.backup/`. Restoring
+            // it is what makes a failed deploy safe: the device goes back to
+            // serving the version it had before instead of staying stuck on a
+            // model it cannot load.
+            eprintln!("\nRolling back to the previous version...");
+            match aios_deploy::rollback_model(&config.base_url, &result.model_name) {
+                Ok(r) => {
+                    eprintln!("  rolled back to '{}'", r.model);
+                    eprintln!("  sha256:        {}", r.sha256);
+                    eprintln!("  size:          {} bytes", r.size_bytes);
+                    match aios_deploy::probe_device(&config.base_url) {
+                        Ok(p) => eprintln!(
+                            "  device now:    {} ({} model(s) installed)",
+                            p.status,
+                            p.models.len()
+                        ),
+                        Err(pe) => eprintln!("  warning: could not re-probe the device: {pe}"),
+                    }
+                }
+                Err(re) => {
+                    eprintln!("  rollback failed: {re}");
+                    eprintln!(
+                        "  the device may be left with a model it cannot serve; \
+                         inspect it with 'aios-deploy status'."
+                    );
+                    // `devices` was updated to Online before the health check.
+                    // Record the failure so it does not keep claiming the
+                    // device is fine.
+                    if let Ok(mut reg) = DeviceRegistry::load() {
+                        reg.update_status(
+                            &resolved_id,
+                            DeviceStatus::Error("deploy health check failed".into()),
+                        );
+                        let _ = reg.save();
+                    }
+                }
+            }
+            1
+        }
+    }
+}
+
+fn cmd_status(args: &[String]) -> i32 {
+    if args.len() != 1 {
+        eprintln!("usage: aios-deploy status <device-id>");
+        return 2;
+    }
+
+    let reg = match DeviceRegistry::load() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error loading registry: {e}");
+            return 1;
+        }
+    };
+    let device = match resolve_device(&reg, &args[0]) {
+        Some(d) => d,
+        None => {
+            eprintln!("Device {} not found", args[0]);
+            eprintln!("Run 'aios-deploy devices' to list registered devices.");
+            return 1;
+        }
+    };
+
+    // Snapshot the fields before dropping the registry borrow, because the
+    // probe below updates and saves the same registry.
+    let id = device.id.clone();
+    let name = device.name.clone();
+    let address = device.address.clone();
+    let arch = device.arch.clone();
+    let os = device.os.clone();
+    let ram_mb = device.ram_mb;
+    let storage_mb = device.storage_mb;
+    let registry_status = device.status_str().to_string();
+    let models = device.models.clone();
+    let last_seen = device.last_seen;
+
+    println!("Device {name}");
+    println!("  id:        {id}");
+    println!("  address:   {address}");
+    println!("  arch/os:   {arch} / {os}");
+    println!("  ram:       {ram_mb} MB");
+    println!("  storage:   {storage_mb} MB");
+    println!("  registry:  {registry_status}");
+    println!(
+        "  last seen: {}",
+        if last_seen == 0 {
+            "never".to_string()
+        } else {
+            format!("{last_seen} (unix)")
+        }
+    );
+    if models.is_empty() {
+        println!("  models:    <none>");
+    } else {
+        println!("  models:    {}", models.join(", "));
+    }
+
+    println!("\nLive probe:");
+    let base = format!("http://{address}");
+    match aios_deploy::probe_device(&base) {
+        Ok(p) => {
+            println!("  service:   {} v{}", p.service, p.version);
+            println!("  status:    {}", p.status);
+            if p.models.is_empty() {
+                println!("  models:    <none>");
+            } else {
+                println!("  models:    {}", p.models.join(", "));
+            }
+            if let Ok(mut reg) = DeviceRegistry::load() {
+                reg.update_status(&id, DeviceStatus::Online);
+                reg.update_models(&id, p.models);
+                reg.touch(&id);
+                if let Err(e) = reg.save() {
+                    eprintln!("  warning: could not update the device registry: {e}");
+                }
+            }
+            0
+        }
+        Err(e) => {
+            println!("  unreachable: {e}");
+            if let Ok(mut reg) = DeviceRegistry::load() {
+                reg.update_status(&id, DeviceStatus::Offline);
+                if let Err(e) = reg.save() {
+                    eprintln!("  warning: could not update the device registry: {e}");
+                }
+            }
+            1
+        }
+    }
+}
+
+fn cmd_scan(args: &[String]) -> i32 {
+    let prefix = args.first().map(|s| s.as_str()).unwrap_or("10.42.0");
+    // Allow "10.42.0.0/24" or "10.42.0." as well as "10.42.0".
+    let prefix = prefix
+        .trim_end_matches('/')
+        .trim_end_matches("24")
+        .trim_end_matches('/')
+        .trim_end_matches('.')
+        .to_string();
+    let parts: Vec<&str> = prefix.split('.').collect();
+    let prefix = if parts.len() >= 3 {
+        format!("{}.{}.{}", parts[0], parts[1], parts[2])
+    } else {
+        prefix
+    };
+
+    println!("Scanning {prefix}.0/24 for edge-ai on :8989 …");
+    let hits = scan_subnet(&prefix, 8989);
+    if hits.is_empty() {
+        println!("No AIOS Edge nodes found.");
+        println!("Check: cabo RJ45, GENET/DHCP no Pi, edge-ai a escutar.");
+        return 1;
+    }
+    println!("Found {} node(s):", hits.len());
+    for (addr, probe) in &hits {
+        println!(
+            "  {addr}  {} v{}  status={}  models={}",
+            probe.service,
+            probe.version,
+            probe.status,
+            if probe.models.is_empty() {
+                "<none>".to_string()
+            } else {
+                probe.models.join(",")
+            }
+        );
+    }
+    println!("Next: aios-deploy provision <address>");
+    0
+}
+
+fn cmd_probe(args: &[String]) -> i32 {
+    let Some(address) = args.first() else {
+        eprintln!("usage: aios-deploy probe <address>");
+        return 2;
+    };
+    let base = normalize_base_url(address);
+    match probe_device(&base) {
+        Ok(p) => {
+            println!("probe {base}");
+            println!("  service: {}", p.service);
+            println!("  version: {}", p.version);
+            println!("  status:  {}", p.status);
+            println!(
+                "  models:  {}",
+                if p.models.is_empty() {
+                    "<none>".to_string()
+                } else {
+                    p.models.join(", ")
+                }
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("probe failed: {e}");
+            1
+        }
+    }
+}
+
+fn cmd_provision(args: &[String]) -> i32 {
+    if args.is_empty() {
+        eprintln!("usage: aios-deploy provision <address> [--name NAME]");
+        return 2;
+    }
+    let address = args[0].clone();
+    let mut name = format!(
+        "pi-{}",
+        address
+            .split([':', '/'])
+            .next()
+            .unwrap_or("edge")
+            .rsplit('.')
+            .next()
+            .unwrap_or("edge")
+    );
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--name" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("--name requires a value");
+                    return 2;
+                }
+                name = args[i].clone();
+            }
+            other => {
+                eprintln!("unexpected argument: {other}");
+                return 2;
+            }
+        }
+        i += 1;
+    }
+
+    let base = normalize_base_url(&address);
+    let probe = match probe_device(&base) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("provision: device not reachable at {base}: {e}");
+            return 1;
+        }
+    };
+    if probe.service != "edge-ai" && probe.status != "ok" {
+        eprintln!(
+            "provision: unexpected service '{}' status '{}'",
+            probe.service, probe.status
+        );
+        return 1;
+    }
+
+    // Store host:port without scheme — same shape as `add` / `status`.
+    let registry_addr = base
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .to_string();
+
+    let mut reg = match DeviceRegistry::load() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error loading registry: {e}");
+            return 1;
+        }
+    };
+
+    // Update existing by name or address; otherwise add.
+    let existing_id = reg
+        .list()
+        .into_iter()
+        .find(|d| d.name == name || d.address == registry_addr)
+        .map(|d| d.id.clone());
+
+    let id = if let Some(id) = existing_id {
+        if let Some(entry) = reg.get(&id).cloned() {
+            let mut entry = entry;
+            entry.address = registry_addr.clone();
+            entry.name = name.clone();
+            entry.arch = "aarch64".into();
+            entry.os = "aios-edge".into();
+            entry.status = DeviceStatus::Online;
+            entry.models = probe.models.clone();
+            reg.upsert(entry);
+        }
+        id
+    } else {
+        let mut entry = DeviceEntry::new(
+            name.clone(),
+            registry_addr.clone(),
+            "aarch64".into(),
+            "aios-edge".into(),
+        );
+        entry.status = DeviceStatus::Online;
+        entry.models = probe.models.clone();
+        entry.ram_mb = 4096;
+        entry.storage_mb = 8192;
+        reg.add(entry)
+    };
+
+    if let Err(e) = reg.save() {
+        eprintln!("error saving registry: {e}");
+        return 1;
+    }
+
+    println!("Provisioned '{name}' ({id}) at {registry_addr}");
+    println!(
+        "  {} v{}  models={}",
+        probe.service,
+        probe.version,
+        if probe.models.is_empty() {
+            "<none>".to_string()
+        } else {
+            probe.models.join(",")
+        }
+    );
+    0
+}
+
+fn cmd_rollback(args: &[String]) -> i32 {
+    if args.len() != 2 {
+        eprintln!("usage: aios-deploy rollback <device-id> <model-name>");
+        return 2;
+    }
+
+    let reg = match DeviceRegistry::load() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error loading registry: {e}");
+            return 1;
+        }
+    };
+    let device = match resolve_device(&reg, &args[0]) {
+        Some(d) => d,
+        None => {
+            eprintln!("Device {} not found", args[0]);
+            eprintln!("Run 'aios-deploy devices' to list registered devices.");
+            return 1;
+        }
+    };
+    let base = format!("http://{}", device.address);
+
+    match aios_deploy::rollback_model(&base, &args[1]) {
+        Ok(r) => {
+            println!(
+                "Rolled back '{}' on {} ({} bytes, sha256 {})",
+                r.model, device.name, r.size_bytes, r.sha256
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("rollback failed: {e}");
             1
         }
     }

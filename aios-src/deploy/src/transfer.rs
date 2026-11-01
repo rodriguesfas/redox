@@ -5,6 +5,7 @@
 use aios_core::{checksum, ModelMeta};
 use anyhow::{Context, Result};
 use reqwest::blocking::Client;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -389,4 +390,211 @@ pub fn pull_model(config: &TransferConfig, model_name: &str, output_path: &Path)
         output_path.display()
     );
     Ok(())
+}
+
+/// Result of asking the device to restore the model replaced by the last deploy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RollbackResult {
+    pub model: String,
+    pub path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+}
+
+/// Ask the device to restore the backup of `model_name` (the version that was
+/// installed before the last deploy). The edge daemon keeps one backup per
+/// model name; a 404 means the model was never replaced, so there is nothing
+/// to roll back.
+pub fn rollback_model(base_url: &str, model_name: &str) -> Result<RollbackResult> {
+    let client = Client::builder().timeout(Duration::from_secs(60)).build()?;
+    let url = format!("{}/api/models/rollback", base_url.trim_end_matches('/'));
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({ "name": model_name }))
+        .send()
+        .with_context(|| format!("POST {url}"))?;
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+    if !status.is_success() {
+        return Err(anyhow::anyhow!("rollback failed: HTTP {status}: {text}"));
+    }
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("rollback response is not JSON: {text}"))?;
+    Ok(RollbackResult {
+        model: v
+            .get("model")
+            .and_then(|x| x.as_str())
+            .unwrap_or(model_name)
+            .to_string(),
+        path: v
+            .get("path")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        sha256: v
+            .get("sha256")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        size_bytes: v.get("size").and_then(|x| x.as_u64()).unwrap_or(0),
+    })
+}
+
+/// What a live device reports about itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceProbe {
+    pub status: String,
+    pub service: String,
+    pub version: String,
+    pub models: Vec<String>,
+}
+
+/// Normalize an address or URL into an `http://host:port` base for probes.
+///
+/// Accepts `10.42.0.5`, `10.42.0.5:8989`, or a full `http://…` URL.
+pub fn normalize_base_url(address: &str) -> String {
+    let a = address.trim().trim_end_matches('/');
+    if a.starts_with("http://") || a.starts_with("https://") {
+        return a.to_string();
+    }
+    if a.contains(':') {
+        format!("http://{a}")
+    } else {
+        format!("http://{a}:8989")
+    }
+}
+
+/// Scan a CIDR-like `/24` prefix for AIOS Edge nodes listening on `port`.
+///
+/// `prefix` is the first three octets, e.g. `"10.42.0"`. Hosts `.1`–`.254`
+/// are probed in parallel (bounded); only hosts that answer `/api/health`
+/// with `service=edge-ai` are returned. Uses a short connect timeout so an
+/// empty LAN finishes in a few seconds.
+pub fn scan_subnet(prefix: &str, port: u16) -> Vec<(String, DeviceProbe)> {
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    let work: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new((1u8..=254).collect()));
+    let found: Arc<Mutex<Vec<(String, DeviceProbe)>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut handles = Vec::new();
+
+    for _ in 0..32 {
+        let work = Arc::clone(&work);
+        let found = Arc::clone(&found);
+        let prefix = prefix.to_string();
+        handles.push(thread::spawn(move || {
+            let client = match Client::builder()
+                .timeout(Duration::from_millis(400))
+                .connect_timeout(Duration::from_millis(200))
+                .build()
+            {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            loop {
+                let host = {
+                    let mut q = match work.lock() {
+                        Ok(g) => g,
+                        Err(_) => return,
+                    };
+                    q.pop()
+                };
+                let Some(host) = host else { return };
+                let addr = format!("{prefix}.{host}:{port}");
+                let base = format!("http://{addr}");
+                if let Ok(probe) = probe_device_with_client(&client, &base) {
+                    if probe.service == "edge-ai" || probe.status == "ok" {
+                        if let Ok(mut g) = found.lock() {
+                            g.push((addr, probe));
+                        }
+                    }
+                }
+            }
+        }));
+    }
+    for h in handles {
+        let _ = h.join();
+    }
+
+    let mut out = found.lock().map(|g| g.clone()).unwrap_or_default();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Probe a registered device without deploying: `GET /api/health` plus
+/// `GET /api/models`. Used by `aios-deploy status` and `edge devices`.
+pub fn probe_device(base_url: &str) -> Result<DeviceProbe> {
+    let client = Client::builder().timeout(Duration::from_secs(5)).build()?;
+    probe_device_with_client(&client, base_url)
+}
+
+fn probe_device_with_client(client: &Client, base_url: &str) -> Result<DeviceProbe> {
+    let base = base_url.trim_end_matches('/');
+
+    let health: serde_json::Value = client
+        .get(format!("{base}/api/health"))
+        .send()
+        .with_context(|| format!("GET {base}/api/health"))?
+        .error_for_status()
+        .context("device health check failed")?
+        .json()
+        .context("health response is not JSON")?;
+
+    let models: serde_json::Value = client
+        .get(format!("{base}/api/models"))
+        .send()
+        .with_context(|| format!("GET {base}/api/models"))?
+        .error_for_status()
+        .context("device model list failed")?
+        .json()
+        .context("models response is not JSON")?;
+
+    Ok(DeviceProbe {
+        status: health
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        service: health
+            .get("service")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        version: health
+            .get("version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        models: models
+            .get("models")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m.get("name").and_then(|n| n.as_str()).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    })
+}
+
+#[cfg(test)]
+mod fleet_url_tests {
+    use super::normalize_base_url;
+
+    #[test]
+    fn normalize_adds_default_port() {
+        assert_eq!(normalize_base_url("10.42.0.5"), "http://10.42.0.5:8989");
+    }
+
+    #[test]
+    fn normalize_keeps_explicit_port_and_url() {
+        assert_eq!(
+            normalize_base_url("10.42.0.5:9000"),
+            "http://10.42.0.5:9000"
+        );
+        assert_eq!(
+            normalize_base_url("http://10.42.0.5:8989/"),
+            "http://10.42.0.5:8989"
+        );
+    }
 }

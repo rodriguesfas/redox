@@ -71,6 +71,7 @@ const DMA_DESC_SIZE: usize = 12;
 
 const TOTAL_DESCS: usize = 256;
 const RX_BUF_LENGTH: usize = 2048;
+const TX_BUF_LENGTH: usize = 2048;
 const RX_TOTAL_BUFSIZE: usize = RX_BUF_LENGTH * TOTAL_DESCS;
 const DEFAULT_Q: usize = 0x10;
 const DMA_RING_SIZE: usize = 0x40;
@@ -165,24 +166,30 @@ impl Genet {
         })
     }
 
-    pub fn init(&mut self, led: &crate::led::Led) -> Result<(), &'static str> {
+    pub fn init(&mut self, led: Option<&crate::led::Led>) -> Result<(), &'static str> {
         let base = self.base;
         // stage 1: rev check
         crate::breadcrumb::write(1, "init: reading SYS_REV_CTRL", None);
-        led.stage(1);
+        if let Some(l) = led {
+            l.stage(1);
+        }
         let rev = rd32(base, SYS_REV_CTRL);
         let major = (rev >> 24) & 0x0F;
         let minor = (rev >> 16) & 0x0F;
         crate::breadcrumb::write(1, &format!("rev major={} minor={}", major, minor), None);
         if major != 6 {
             crate::breadcrumb::write(1, "unsupported GENET major", Some("major != 6"));
-            led.error();
+            if let Some(l) = led {
+                l.error();
+            }
             return Err("unsupported GENET major");
         }
 
         // stage 2: interface set
         crate::breadcrumb::write(2, "interface set (PORT_MODE_EXT_GPHY)", None);
-        led.stage(2);
+        if let Some(l) = led {
+            l.stage(2);
+        }
         wr32(base, SYS_PORT_CTRL, PORT_MODE_EXT_GPHY);
 
         // umac reset
@@ -201,7 +208,7 @@ impl Genet {
         self.rx_descs_init();
         self.tx_ring_init();
         crate::breadcrumb::write(3, "rings initialized", None);
-        led.stage(3);
+        if let Some(l) = led { l.stage(3); }
 
         // enable dma
         self.enable_dma();
@@ -209,10 +216,10 @@ impl Genet {
 
         // phy init
         crate::breadcrumb::write(4, "phy init starting", None);
-        led.stage(4);
+        if let Some(l) = led { l.stage(4); }
         if let Err(e) = self.phy_init() {
             crate::breadcrumb::write(4, "phy init failed", Some(e));
-            led.error();
+            if let Some(l) = led { l.error(); }
             return Err(e);
         }
         crate::breadcrumb::write(4, &format!("phy link up, speed={}", self.max_speed), None);
@@ -220,7 +227,7 @@ impl Genet {
         // adjust link
         self.adjust_link();
         crate::breadcrumb::write(5, &format!("adjust_link speed={}", self.max_speed), None);
-        led.stage(5);
+        if let Some(l) = led { l.stage(5); }
 
         // enable mac tx/rx
         let cmd = rd32(base, UMAC_CMD);
@@ -404,28 +411,24 @@ impl Genet {
         Ok(())
     }
 
-    pub fn tx_beacon(&mut self, counter: u64, msg: &str) -> Result<(), &'static str> {
+    /// Transmit an Ethernet frame (pads to 60 bytes). Used by NetworkScheme.
+    pub fn tx_frame(&mut self, frame: &[u8]) -> Result<usize, &'static str> {
+        if frame.is_empty() {
+            return Err("empty frame");
+        }
         let base = self.base;
-        // build frame (min 60 bytes)
-        let mut frame = [0u8; 64];
-        frame[0..6].copy_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
-        frame[6..12].copy_from_slice(&self.mac);
-        frame[12] = 0x88;
-        frame[13] = 0xB5;
-        let payload = format!("AIOS-BOOT n={} {}", counter, msg);
-        let pb = payload.as_bytes();
-        let n = pb.len().min(46);
-        frame[14..14 + n].copy_from_slice(&pb[..n]);
-        let frame_len: usize = 60;
-
-        // write to tx buffer
+        let frame_len = frame.len().max(60).min(TX_BUF_LENGTH);
         let tx_virt = self.tx_buf.virt_addr();
         unsafe {
-            core::ptr::copy_nonoverlapping(frame.as_ptr(), tx_virt as *mut u8, frame_len);
+            core::ptr::write_bytes(tx_virt as *mut u8, 0, frame_len);
+            core::ptr::copy_nonoverlapping(
+                frame.as_ptr(),
+                tx_virt as *mut u8,
+                frame.len().min(frame_len),
+            );
         }
         let tx_phys = self.tx_buf.physical();
 
-        // fill descriptor
         let desc = base + GENET_TX_OFF + self.tx_slot * DMA_DESC_SIZE;
         wr32(desc, DMA_DESC_ADDRESS_LO, tx_phys as u32);
         wr32(desc, DMA_DESC_ADDRESS_HI, (tx_phys >> 32) as u32);
@@ -436,26 +439,37 @@ impl Genet {
             | DMA_EOP;
         wr32(desc, DMA_DESC_LENGTH_STATUS, len_stat);
 
-        // kick
         self.tx_slot = (self.tx_slot + 1) % TOTAL_DESCS;
-        self.tx_prod += 1;
+        self.tx_prod = self.tx_prod.wrapping_add(1);
         wr32(base, TDMA_RING_BASE + DMA_PROD_INDEX, self.tx_prod);
 
-        // wait for completion
         let deadline = Instant::now() + Duration::from_millis(100);
         loop {
             let cons = rd32(base, TDMA_RING_BASE + DMA_CONS_INDEX) & 0xFFFF;
             if cons == (self.tx_prod & 0xFFFF) {
-                break;
+                return Ok(frame.len());
             }
             if Instant::now() > deadline {
                 return Err("tx timeout");
             }
             thread::sleep(Duration::from_millis(1));
         }
-        Ok(())
     }
 
+    pub fn tx_beacon(&mut self, counter: u64, msg: &str) -> Result<(), &'static str> {
+        let mut frame = [0u8; 60];
+        frame[0..6].copy_from_slice(&[0xff; 6]);
+        frame[6..12].copy_from_slice(&self.mac);
+        frame[12] = 0x88;
+        frame[13] = 0xB5;
+        let payload = format!("AIOS-BOOT n={} {}", counter, msg);
+        let pb = payload.as_bytes();
+        let n = pb.len().min(46);
+        frame[14..14 + n].copy_from_slice(&pb[..n]);
+        self.tx_frame(&frame).map(|_| ())
+    }
+
+    /// Drain hardware RX descriptors into `rx_queue` (software backlog for NetworkScheme).
     pub fn poll_rx(&mut self) {
         let base = self.base;
         let prod = rd32(base, RDMA_RING_BASE + DMA_PROD_INDEX) & 0xFFFF;
@@ -465,17 +479,47 @@ impl Genet {
         while (self.c_index & 0xFFFF) != prod as usize {
             let slot = self.rx_index;
             let desc = base + GENET_RX_OFF + slot * DMA_DESC_SIZE;
-            let _addr = rd32(desc, DMA_DESC_ADDRESS_LO) as usize;
             let len_stat = rd32(desc, DMA_DESC_LENGTH_STATUS);
-            let _len = ((len_stat >> DMA_BUFLENGTH_SHIFT) & DMA_BUFLENGTH_MASK) as usize;
-            // re-arm descriptor
+            let len = ((len_stat >> DMA_BUFLENGTH_SHIFT) & DMA_BUFLENGTH_MASK) as usize;
+            // Copy out before re-arming (RBUF_ALIGN_2B → 2-byte pad at start).
+            if len > 2 && len <= RX_BUF_LENGTH {
+                let payload_len = len - 2;
+                let mut pkt = vec![0u8; payload_len];
+                let src = self.rx_buf.virt_addr() as *const u8;
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        src.add(slot * RX_BUF_LENGTH + 2),
+                        pkt.as_mut_ptr(),
+                        payload_len,
+                    );
+                }
+                if self.rx_queue.len() < 64 {
+                    self.rx_queue.push(pkt);
+                }
+            }
             let buf_phys = self.rx_buf.physical() + slot * RX_BUF_LENGTH;
             wr32(desc, DMA_DESC_ADDRESS_LO, buf_phys as u32);
             wr32(desc, DMA_DESC_ADDRESS_HI, (buf_phys >> 32) as u32);
-            wr32(desc, DMA_DESC_LENGTH_STATUS, (RX_BUF_LENGTH as u32) << DMA_BUFLENGTH_SHIFT | DMA_OWN);
+            wr32(
+                desc,
+                DMA_DESC_LENGTH_STATUS,
+                (RX_BUF_LENGTH as u32) << DMA_BUFLENGTH_SHIFT | DMA_OWN,
+            );
             self.c_index = (self.c_index + 1) & 0xFFFF;
             wr32(base, RDMA_RING_BASE + DMA_CONS_INDEX, self.c_index as u32);
             self.rx_index = (self.rx_index + 1) % TOTAL_DESCS;
+        }
+    }
+
+    pub fn rx_pending(&self) -> usize {
+        self.rx_queue.len()
+    }
+
+    pub fn pop_rx(&mut self) -> Option<Vec<u8>> {
+        if self.rx_queue.is_empty() {
+            None
+        } else {
+            Some(self.rx_queue.remove(0))
         }
     }
 

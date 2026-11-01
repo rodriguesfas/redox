@@ -16,6 +16,60 @@ filesystem_size = 4096
 # EFI partition size in MiB (bootloader UEFI)
 efi_partition_size = 512
 
+# Identidade do produto (sobrescreve defaults do Redox em base.toml / userutils)
+[[files]]
+path = "/etc/hostname"
+data = "aios-edge"
+
+[[files]]
+path = "/usr/lib/os-release"
+data = """
+PRETTY_NAME="AIOS Edge 0.1"
+NAME="AIOS Edge"
+VERSION_ID="0.1"
+VERSION="0.1 (pi4)"
+ID="aios-edge"
+ID_LIKE="redox-os"
+HOME_URL="https://github.com/aios/aios"
+VARIANT="edge"
+VARIANT_ID="edge"
+"""
+
+[[files]]
+path = "/etc/issue"
+data = """
+\u001b[38;5;45m
+    ╔══════════════════════════════════════╗
+    ║                                      ║
+    ║   \u001b[1m██╗  ██╗██╗ ██████╗ ███████╗\u001b[0m\u001b[38;5;45m       ║
+    ║   \u001b[1m██║  ██║██║██╔═══██╗██╔════╝\u001b[0m\u001b[38;5;45m       ║
+    ║   \u001b[1m███████║██║██║   ██║███████╗\u001b[0m\u001b[38;5;45m       ║
+    ║   \u001b[1m██╔══██║██║██║   ██║╚════██║\u001b[0m\u001b[38;5;45m       ║
+    ║   \u001b[1m██║  ██║██║╚██████╔╝███████║\u001b[0m\u001b[38;5;45m       ║
+    ║   \u001b[1m╚═╝  ╚═╝╚═╝ ╚═════╝ ╚══════╝\u001b[0m\u001b[38;5;45m       ║
+    ║                                      ║
+    ║   \u001b[1mAIOS Edge\u001b[0m\u001b[38;5;45m  ·  edge AI operating system ║
+    ║   raspberry pi 4  ·  aarch64         ║
+    ║                                      ║
+    ╚══════════════════════════════════════╝
+\u001b[0m
+  \u001b[2msign in\u001b[0m
+    \u001b[1muser\u001b[0m   — empty password
+    \u001b[1mroot\u001b[0m   — change the lab default ASAP
+
+"""
+
+[[files]]
+path = "/etc/motd"
+data = """
+
+\u001b[38;5;45mAIOS Edge\u001b[0m — inference at the rim.
+  daemon  \u001b[2medge-ai\u001b[0m   →  http://0.0.0.0:8989
+  models  \u001b[2m/usr/share/aios/models\u001b[0m
+  status  \u001b[2medge status\u001b[0m
+
+"""
+
 # Package settings
 [packages]
 # Produto AIOS: compila aios-src para o alvo (aarch64-unknown-redox)
@@ -35,8 +89,11 @@ path = "/usr/lib/init.d/50_aios_edge.service"
 data = """
 [unit]
 description = "AIOS Edge daemon (edge-ai): API HTTP + painel web"
+# Headless: sobe sem login local. Rede é fraca — se GENET atrasar, o daemon
+# ainda tenta bind; o fleet probe no PC espera o lease.
 requires_weak = [
     "10_net.target",
+    "00_base.target",
 ]
 
 [service]
